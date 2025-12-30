@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Logs
+*.log
+
+# DB dumps
+*.sql
+*.sql.gz
+
+# Crawled raw html
+data/raw_html/
+
+# OS / Editor
+.DS_Store
+.vscode/

@@ -1,0 +1,433 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN""http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="ko" lang="ko">
+<head>
+  <meta http-equiv="X-UA-Compatible" content="IE=Edge"/>
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>
+  <title>대한성서공회</title>
+  <meta charset="utf-8">
+  <meta content="http://schemas.microsoft.com/intellisense/ie5" name="vs_targetSchema">
+  <link href="css/style.css?id=1767067345" type="text/css" rel="stylesheet">
+  <script src="//ajax.aspnetcdn.com/ajax/jQuery/jquery-1.12.2.min.js"></script>
+  <script language="JavaScript" src="js/bible.list.js" type="text/javascript"></script>
+  <script language="JavaScript" src="js/bible.page.js?v2" type="text/javascript"></script>
+  <script language="JavaScript" src="js/common.js" type="text/javascript"></script>
+  <script language="javascript" src="js/layer.js" type="text/javascript"></script>
+  <style>
+    .searchList li > ul {
+      margin-top: 15px;
+    }
+
+    .searchList input[type="radio"] {
+      margin-right: 3px
+    }
+
+    #txtReadInfo {
+      padding: 0 5px;
+    }
+  </style>
+
+  <script language="javascript">
+      $(document).ready(function () {
+          //ChangeBooksForRead();
+      });
+
+      function printDiv() {
+
+          var printContents = $('.leftCont').html();
+          var originalContents = document.body.innerHTML;
+
+          document.body.innerHTML = printContents;
+          window.print();
+          document.body.innerHTML = originalContents;
+      }
+  </script>
+</head>
+
+<body>
+<div id="bible_header">
+
+  <div id="searchBox1">
+    <div class="logo">
+      <a href='/'><img src="/images/sub/bible/top_logo_white.png"/></a>
+    </div>
+    <div class="topIcon">
+      <a href="./korbibReadpage.php"><img src="/images/sub/bible/btn_reading1.png" alt="처음으로" title="처음으로"/></a>
+      <a href="#" id="top_search_btn" style="display:none;"><img src="/images/sub/bible/btn_reading7.png" alt="검색박스"
+                                                                 title="검색박스" style="display: "/></a>
+      <a href="./korbibclip02.php"
+         onclick="javascript:window.open(this.href,'','width=530, height=600, scrollbars=yes');return false;">
+        <img src="/images/sub/bible/btn_reading2.png" alt="책갈피" title="책갈피"/></a>
+      <a href="./korbib_shortword01.php"
+         onclick="javascript:window.open(this.href,'','width=533, height=600, scrollbars=yes');return false;">
+        <img src="/images/sub/bible/btn_reading3.png" alt="범례" title="범례"/>
+      </a>
+      <a href="#none" onclick="printDiv();return false">
+        <img src="/images/sub/bible/btn_reading4.png" alt="프린트" title="프린트"/>
+      </a>
+      <a href="#none" onclick="javascript:changeToBold();return false;">
+        <img src="/images/sub/bible/btn_reading5.png" alt="글씨굵게" title="글씨굵게"/>
+      </a>
+      <a href="#none" onclick="javascript:changeFontSize();return false;">
+        <img src="/images/sub/bible/btn_reading6.png" alt="글자두께" title="글자두께"/>
+      </a>
+    </div>
+
+    <ul id="readMenu">
+      <li><a href="./korbibReadpage.php">성경읽기</a></li>
+      <li><a href="./korbibSearchlist.php">성경검색</a></li>
+      <li><a href="./korbibCompare01.php">평행본문보기</a></li>
+      <li><a href="./korbibStitlelist.php">소제목검색</a></li>
+      <li><a href="./korbibParall.php">역본별 절비교</a></li>
+        <li><a href="./write_comment.php">개역개정 의견쓰기</a></li>
+    </ul>
+    <form id="form" name="formx">
+      <div class="searchList">
+        <ul>
+          <li>
+            <ul>
+              <li><img src="/images/sub/bible/top_arrow.png"/> <strong>역본 선택</strong></li>
+              <li>
+                <select id="version" class="search" onchange="ChangeBooksForRead();" name="version">
+                  <option value="GAE"  >개역개정
+                  </option>
+                  <option value="HAN"  selected='selected'  >개역한글
+                  </option>
+                  <option value="SAE"  >표준새번역
+                  </option>
+                  <option value="SAENEW"  >새번역
+                  </option>
+                  <option value="COG"  >공동번역
+                  </option>
+                  <option value="COGNEW"  >
+                    공동번역 개정판
+                  </option>
+                  <option value="CEV"  >CEV
+                  </option>
+                </select>
+              </li>
+              <li><img src="/images/sub/bible/top_arrow.png"/> <strong>대조역본 선택</strong></li>
+              <li><input id="version1" class="input_chk" onclick="Javascript:CheckBoxCount(this);"
+                         type="checkbox" value="HAN"
+                         name="version1"  ><label for="version1">개역한글판</label>
+              </li>
+              <li><input id="version0" class="input_chk" onclick="Javascript:CheckBoxCount(this);"
+                         type="checkbox" value="GAE"
+                         name="version0"  ><label for="version0">개역개정판</label>
+              </li>
+              <li><input id="version2" class="input_chk" onclick="Javascript:CheckBoxCount(this);"
+                         type="checkbox" value="SAE"
+                         name="version2"  ><label for="version2">표준새번역</label>
+              </li>
+              <li><input id="version3" class="input_chk" onclick="Javascript:CheckBoxCount(this);"
+                         type="checkbox" value="SAENEW"
+                         name="version3"  ><label for="version3">새번역</label>
+              </li>
+              <li><input id="version4" class="input_chk" onclick="Javascript:CheckBoxCount(this);"
+                         type="checkbox" value="COG"
+                         name="version4"  ><label for="version4">공동번역</label>
+              </li>
+              <li><input id="version5" class="input_chk" onclick="Javascript:CheckBoxCount(this);"
+                         type="checkbox" value="COGNEW"
+                         name="version5"  ><label for="version5">공동번역개정판</label>
+              </li>
+              <li><input id="version6" class="input_chk" onclick="Javascript:CheckBoxCount(this);"
+                         type="checkbox" value="CEV"
+                         name="version6"  ><label for="version6">CEV</label>
+              </li>
+              <li><a href="#"></a></li>
+            </ul>
+          </li>
+          <li>
+            <ul>
+              <li><img src="/images/sub/bible/top_arrow.png"/> <strong>본문 선택</strong></li>
+              <li>
+                <input id="Radio1" type="radio" CHECKED value="1"
+                       name="rdoReadType"  >
+                <select id="book" onchange="ChangeChaps();getSec();" name="book"
+                        onclick="javascript:document.all.rdoReadType[0].checked=true;">
+                  <option value="gen" selected>창세기</option>
+                </select> &nbsp; &nbsp;
+                <select id="chap" name="chap" onchange="getSec();"
+                        onclick="javascript:document.all.rdoReadType[0].checked=true;">
+                  <option selected>1</option>
+                </SELECT>
+                <select id="sec" name="sec">
+                  <option selected>1</option>
+                </select>
+                <input type="hidden" id="sec1" name="sec1" value="1"/>
+              </li>
+              <li>
+                <div style="display:inline-block;">
+                  <input id="Radio2" type="radio" value="2"
+                         name="rdoReadType"  >
+                  <label for="Radio2" style="margin-right:3px">직접입력</label>
+                  <input id="txtReadInfo" type="text" maxLength="12" size="12" class="inputbox"
+                         NAME="txtReadInfo" value=""
+                         onfocus="javascript:document.all.rdoReadType[1].checked=true;" placeholder="예) 창 1:5"/>
+                  &nbsp;
+                </div>
+                <input type="button" Onclick="javascript:submitCheck();" value="읽기"
+                       class="searchBtn"/>
+              </li>
+            </ul>
+          </li>
+        </ul>
+      </div>
+    </form>
+  </div>
+</div>
+
+
+<div id="bible_wrap" style="width:100%;">
+  <div id="bible_content">
+    <div class="leftCont">
+                  <div class="titleBg">[에스라 8:1            ]
+          </div>
+          <a href="./korbibclip01.php?version=HAN&book=ezr&chap=8&sec=1"
+             onclick="javascript:window.open(this.href,'','width=500, height=250, scrollbars=yes');return false;"
+             style=" clear: both;margin-left:15px;">
+            <img src="/images/sub/bible/btn_clip.gif" alt="책갈피" title="책갈피"/></a>
+          <div class="paging">
+                              <a href="#none" onclick="javascript:preCheck();return false;"><img
+                      src="/images/sub/bible/btn_back.gif"/></a>
+                <a href="#none" onclick="javascript:nextCheck();return false;"><img
+                      src="/images/sub/bible/btn_next.gif"/></a>
+                        </div>
+        
+
+                
+                  <div id="tdBible1" class="bible_read">
+              <div style='text-align:right'><a href="#none" id="voice1" onclick="window.open('listen.php?voiceAnchor=/data/HAN/$/k$*_HAN_ezr_008.mp3&version=HAN&book=ezr&chap=8&chap2=8&sex=m','listen','width=600, height=450,scrollbars = yes');return false;"><img src="/images/sub/bible/btn_listen.png" style="float:right;width:30px" /></a></div>              <b>개역한글</b><br/><font class="chapNum">제 8 장</font><br /><br /><font class="smallTitle">에스라와 함께 돌아온 백성들</font><br /><br /><span style="color:#376BCB;"><span class="number">1&nbsp;&nbsp;&nbsp;</span><font class="name">아닥사스다</font>왕이 위에 있을 때에 나와 함께 <font class="area">바벨론</font>에서 올라온 족장들과 그들의 보계가 이러하니라 </font></span><br /><span><span class="number">2&nbsp;&nbsp;&nbsp;</span><font class="name">비느하스</font> 자손 중에서는 <font class="name">게르솜</font>이요 <font class="name">이다말</font> 자손 중에서는 <font class="name">다니엘</font>이요 <font class="name">다윗</font> 자손 중에서는 <font class="name">핫두스</font>요 </font></span><br /><span><span class="number">3&nbsp;&nbsp;&nbsp;</span><font class="name">스가냐</font> 자손 곧 <font class="name">바로스</font> 자손 중에서는 <font class="name">스가랴</font>니 그와 함께 족보에 기록된 남자가 일백 오십명이요 </font></span><br /><span><span class="number">4&nbsp;&nbsp;&nbsp;</span><font class="name">바핫모압</font> 자손 중에서는 <font class="name">스라히야</font>의 아들 <font class="name">엘여호에내</font>니 그와 함께한 남자가 이백명이요 </font></span><br /><span><span class="number">5&nbsp;&nbsp;&nbsp;</span><font class="name">스가냐</font> 자손 중에서는 <font class="name">야하시엘</font>의 아들이니 그와 함께한 남자가 삼백명이요 </font></span><br /><span><span class="number">6&nbsp;&nbsp;&nbsp;</span><font class="name">아딘</font> 자손 중에서는 <font class="name">요나단</font>의 아들 <font class="name">에벳</font>이니 그와 함께한 남자가 오십명이요 </font></span><br /><span><span class="number">7&nbsp;&nbsp;&nbsp;</span><font class="name">엘람</font> 자손 중에서는 <font class="name">아달리야</font>의 아들 <font class="name">여사야</font>니 그와 함께한 남자가 칠십명이요 </font></span><br /><span><span class="number">8&nbsp;&nbsp;&nbsp;</span><font class="name">스바댜</font> 자손 중에서는 <font class="name">미가엘</font>의 아들 <font class="name">스바댜</font>니 그와 함께한 남자가 팔십명이요 </font></span><br /><span><span class="number">9&nbsp;&nbsp;&nbsp;</span><font class="name">요압</font> 자손 중에서는 <font class="name">여히엘</font>의 아들 <font class="name">오바댜</font>니 그와 함께한 남자가 이백 십 팔명이요 </font></span><br /><span><span class="number">10&nbsp;&nbsp;&nbsp;</span><font class="name">슬로밋</font> 자손 중에서는 <font class="name">요시뱌</font>의 아들이니 그와 함께한 남자가 일백 육십명이요 </font></span><br /><span><span class="number">11&nbsp;&nbsp;&nbsp;</span><font class="name">베배</font> 자손 중에서는 <font class="name">베배</font>의 아들 <font class="name">스가랴</font>니 그와 함께한 남자가 이십 팔명이요 </font></span><br /><span><span class="number">12&nbsp;&nbsp;&nbsp;</span><font class="name">아스갓</font> 자손 중에서는 <font class="name">학가단</font>의 아들 <font class="name">요하난</font>이니 그와 함께한 남자가 일백 십명이요 </font></span><br /><span><span class="number">13&nbsp;&nbsp;&nbsp;</span><font class="name">아도니감</font> 자손 중에 나중된 자의 이름은 <font class="name">엘리벨렛</font>과 <font class="name">여우엘</font>과 <font class="name">스마야</font>니 그와 함께한 남자가 육십명이요 </font></span><br /><span><span class="number">14&nbsp;&nbsp;&nbsp;</span><font class="name">비그왜</font> 자손 중에서는 <font class="name">우대</font>와 <font class="name">사붓</font>이니 그와 함께한 남자가 칠십명이었느니라</font></span><br /> <br /><br /><font class="smallTitle">에스라가 레위 사람을 찾다</font><br /><br /><span><span class="number">15&nbsp;&nbsp;&nbsp;</span><font size='1'></font>내가 무리를 <font class="area">아하와</font>로 흐르는 강가에 모으고 거기서 삼일 동안 장막에 유하며 백성과 제사장들을 살핀즉 그 중에 <font class="name">레위</font> 자손이 하나도 없는지라 </font></span><br /><span><span class="number">16&nbsp;&nbsp;&nbsp;</span>이에 모든 족장 곧 <font class="name">엘리에셀</font>과 <font class="name">아리엘</font>과 <font class="name">스마야</font>와 <font class="name">엘라단</font>과 <font class="name">야립</font>과 <font class="name">엘라단</font>과 <font class="name">나단</font>과 <font class="name">스가랴</font>와 <font class="name">므술람</font>을 부르고 또 명철한 사람 <font class="name">요야립</font>과 <font class="name">엘라단</font>을 불러 </font></span><br /><span><span class="number">17&nbsp;&nbsp;&nbsp;</span><font class="area">가시뱌</font> 지방으로 보내어 그곳 족장 <font class="name">잇도</font>에게 나아가게 하고 <font class="name">잇도</font>와 그 형제 곧 <font class="area">가시뱌</font> 지방에 거한 <font class="area">느디님</font> 사람들에게 할 말을 일러주고 우리 하나님의 전을 위하여 수종들 자를 데리고 오라 하였더니 </font></span><br /><span><span class="number">18&nbsp;&nbsp;&nbsp;</span>우리 하나님의 선한 손의 도우심을 입고 저희가 <font class="name">이스라엘</font>의 손자 <font class="name">레위</font>의 아들 <font class="name">말리</font>의 자손 중에서 한 명철한 사람을 데려오고 또 <font class="name">세레뱌</font>와 그 아들들과 형제 십 팔명과 </font></span><br /><span><span class="number">19&nbsp;&nbsp;&nbsp;</span><font class="name">하사뱌</font>와 <font class="name">므라리</font> 자손 중 <font class="name">여사야</font>와 그 형제와 저의 아들들 이십명을 데려오고 </font></span><br /><span><span class="number">20&nbsp;&nbsp;&nbsp;</span>또 <font class="area">느디님</font> 사람 곧 <font class="name">다윗</font>과 방백들이 주어 <font class="area">레위</font> 사람에게 수종들게 한 그 <font class="area">느디님</font> 사람 중 이백 이십명을 데려왔으니 그 이름이 다 기록되었느니라</font></span><br /> <br /><br /><font class="smallTitle">에스라가 금식하며 간구하다</font><br /><br /><span><span class="number">21&nbsp;&nbsp;&nbsp;</span><font size='1'></font>때에 내가 <font class="area">아하와</font>강 가에서 금식을 선포하고 우리 하나님 앞에서 스스로 겸비하여 우리와 우리 어린것과 모든 소유를 위하여 평탄한 길을 그에게 간구하였으니 </font></span><br /><span><span class="number">22&nbsp;&nbsp;&nbsp;</span>이는 우리가 전에 왕에게 고하기를 우리 하나님의 손은 자기를 찾는 모든 자에게 선을 베푸시고 자기를 배반하는 모든 자에게는 권능과 진노를 베푸신다 하였으므로 길에서 적군을 막고 우리를 도울 보병과 마병을 왕에게 구하기를 부끄러워 하였음이라 </font></span><br /><span><span class="number">23&nbsp;&nbsp;&nbsp;</span>그러므로 우리가 이를 위하여 금식하며 우리 하나님께 간구하였더니 그 응낙하심을 입었느니라</font></span><br /> <br /><br /><font class="smallTitle">성전에 바친 예물</font><br /><br /><span><span class="number">24&nbsp;&nbsp;&nbsp;</span><font size='1'></font>그 때에 내가 제사장의 두목 중 십 이인 곧 <font class="name">세레뱌</font>와 <font class="name">하사뱌</font>와 그 형제 십인을 따로 세우고 </font></span><br /><span><span class="number">25&nbsp;&nbsp;&nbsp;</span>저희에게 왕과 모사들과 방백들과 또 그곳에 있는 <font class="area">이스라엘</font> 무리가 우리 하나님의 전을 위하여 드린 은과 금과 기명들을 달아서 주었으니 </font></span><br /><span><span class="number">26&nbsp;&nbsp;&nbsp;</span>내가 달아서 저희 손에 준 것은 은이 육백 오십 <font class="orgin">달란트</font>요 은 기명이 일백 <font class="orgin">달란트</font>요 금이 일백 <font class="orgin">달란트</font>며 </font></span><br /><span><span class="number">27&nbsp;&nbsp;&nbsp;</span>또 금잔이 이십개라 중수는 일천 <font class="orgin">다릭</font>이요 또 아름답고 빛나 금 같이 보배로운 놋그릇이 두개라 </font></span><br /><span><span class="number">28&nbsp;&nbsp;&nbsp;</span>내가 저희에게 이르되 너희는 여호와께 거룩한 자요 이 기명들도 거룩하고 그 은과 금은 너희 열조의 하나님 여호와께 즐거이 드린 예물이니 </font></span><br /><span><span class="number">29&nbsp;&nbsp;&nbsp;</span>너희는 <font class="area">예루살렘</font> 여호와의 전 골방에 이르러 제사장의 두목들과 <font class="area">레위</font> 사람의 두목들과 <font class="area">이스라엘</font> 족장 앞에서 이 기명을 달기까지 삼가 지키라 </font></span><br /><span><span class="number">30&nbsp;&nbsp;&nbsp;</span>이에 제사장들과 <font class="area">레위</font> 사람들이 은과 금과 기명을 <font class="area">예루살렘</font> 우리 하나님의 전으로 가져가려 하여 그 중수대로 받으니라</font></span><br /> <br /><br /><font class="smallTitle">에스라가 예루살렘으로 돌아오다</font><br /><br /><span><span class="number">31&nbsp;&nbsp;&nbsp;</span><font size='1'></font>정월 십 이일에 우리가 <font class="area">아하와</font>강을 떠나 <font class="area">예루살렘</font>으로 갈쌔 우리 하나님의 손이 우리를 도우사 대적과 길에 매복한 자의 손에서 건지신지라 </font></span><br /><span><span class="number">32&nbsp;&nbsp;&nbsp;</span>이에 <font class="area">예루살렘</font>에 이르러 거기서 삼일을 유하고 </font></span><br /><span><span class="number">33&nbsp;&nbsp;&nbsp;</span>제 사일에 우리 하나님의 전에서 은과 금과 기명을 달아서 제사장 <font class="name">우리아</font>의 아들 <font class="name">므레못</font>의 손에 붙이니 <font class="name">비느하스</font>의 아들 <font class="name">엘르아살</font>과 <font class="area">레위</font> 사람 <font class="name">예수아</font>의 아들 <font class="name">요사밧</font>과 <font class="name">빈누이</font>의 아들 <font class="name">노아댜</font>가 함께 있어 </font></span><br /><span><span class="number">34&nbsp;&nbsp;&nbsp;</span>모든 것을 다 계수하고 달아보고 그 중수를 당장에 책에 기록하였느니라 </font></span><br /><span><span class="number">35&nbsp;&nbsp;&nbsp;</span><font size='1'></font>사로잡혔던 자의 자손 곧 이방에서 돌아온 자들이 <font class="area">이스라엘</font> 하나님께 번제를 드렸는데 <font class="area">이스라엘</font> 전체를 위한 수송아지가 열 둘이요 또 수양이 아흔 여섯이요 어린 양이 일흔 일곱이요 또 속죄제의 수염소가 열 둘이니 모두 여호와께 드린 번제물이라 </font></span><br /><span><span class="number">36&nbsp;&nbsp;&nbsp;</span>무리가 또 왕의 조서를 왕의 관원과 강 서편 총독들에게 부치매 저희가 백성과 하나님의 전을 도왔느니라</font></span>          </div>
+                        
+                  <div style="width:100%;text-align: center">
+            <a href="#none" onclick="javascript:preCheck();return false;"><img
+                  src="/images/sub/bible/btn_back.gif"/></a>
+            <a href="#none" onclick="javascript:nextCheck();return false;"><img
+                  src="/images/sub/bible/btn_next.gif"/></a>
+          </div>
+
+            </div>
+    <div class="rightCont">
+        
+<div class="search_top">
+  <div>
+    <span class="search_text">성경 단어 검색</span>
+    <p style="padding-top:10px;"><input type="text" name="search_keyword" id="search_keyword" class="search_input"
+                                        value=""/>
+      <input type="button" value="검색" class="search_submit" onclick="getSearchBox();return false;"/></p>
+          <script>
+        $('#search_keyword').keyup(function (e) {
+            if ($("#search_keyword:focus") && (e.keyCode === 13)) {
+                getSearchBox();
+            }
+        });
+    </script>
+  </div>
+  <div class="hide_btn" alt="검색박스 숨기기" title="검색박스 숨기기">-</div>
+  <script>
+      var setCookie = function (name, value, exp) {
+          var date = new Date();
+          date.setTime(date.getTime() + exp * 24 * 60 * 60 * 1000);
+          document.cookie = name + '=' + value + ';expires=' + date.toUTCString() + ';path=/';
+      };
+
+      var getCookie = function (name) {
+          var value = document.cookie.match('(^|;) ?' + name + '=([^;]*)(;|$)');
+          return value ? value[2] : null;
+      };
+
+
+      $('.hide_btn').click(function () {
+          $('.rightCont').hide();
+          $('#top_search_btn').show();
+          setCookie('hide-read-sidebar', 1);
+      });
+
+      $('#top_search_btn').click(function () {
+          $('.rightCont').show();
+          $('#top_search_btn').hide();
+          setCookie('hide-read-sidebar', 0);
+      });
+
+      if (getCookie('hide-read-sidebar') == '1') {
+          $('.hide_btn').click();
+      }
+
+
+  </script>
+</div>
+<div class="search_body">
+  <span class="search_text">검색 결과</span><br>
+  <p style="margin-top:10px; border:1px solid #e1e1e1; background:#ffffff; height:230px; overflow-y:scroll;"
+     id="search_result_box">
+  </p>
+</div>
+<div>
+  <dl class="banner_list">
+    <dt><a href="/prog/read3_3.php" target="_new"><img src="/images/sub/bible/banner_icon1.gif"/></a></dt>
+    <dd><img src="/images/sub/bible/banner_icon2.gif"
+             Onclick="window.open('/prog/popup_term.php','popup_term','width=580, height=600, menubar=no, status=no, toolbar=no, scrollbar=auto');"
+             style="cursor:pointer"/>
+    </dd>
+  </dl>
+  <dl class="banner_list">
+    <dt><img src="/images/sub/bible/banner_icon3.gif"
+             Onclick="window.open('/prog/popup_name.php','popup_name','width=580, height=600, menubar=no, status=no, toolbar=no, scrollbar=auto');"
+             style="cursor:pointer"/>
+    </dt>
+    <dd><a href="/prog/read3_3_4_1.php" target="_new"><img src="/images/sub/bible/banner_icon4.gif"/></a></dd>
+  </dl>
+</div>
+<div class="search_bottom">
+  <span class="search_text">선교현장소식</span><br>
+  <p style="padding-top:10px;">
+      <a href="https://www.bskorea.or.kr/landing/2025/campaign4/?channelcode=dp&amp;utm_campaign=2025christmas" target="_blank"><img src="https://www.bskorea.or.kr:443/data/editor/2512/83bb9557153847d7aa4019ba5ca622cf_1764747175_3127.png" title="83bb9557153847d7aa4019ba5ca622cf_1764747175_3127.png" style="width:100%"><br style="clear:both;"><br style="clear:both;"><br style="clear:both;"><br style="clear:both;"><br style="clear:both;"><br style="clear:both;"><br style=" clear:both;" =""=""><br style="clear:both;"><br style="clear:both;"><br style="clear:both;"><br style="clear:both;"><br style="clear:both;"><br style="clear:both;"><br style="clear:both;"><br></a>  </p>
+</div>    </div>
+  </div>
+
+
+  <script language="javascript" type="text/javascript">
+
+      function submitCheck() {
+          var version = document.all.version.options[document.all.version.selectedIndex].value;
+          var book = document.all.book.options[document.all.book.selectedIndex].value;
+          var chap = document.all.chap.options[document.all.chap.selectedIndex].value;
+          var sec = document.all.sec.options[document.all.sec.selectedIndex].value;
+          var fontSize = document.getElementById("tdBible1").style.fontSize;
+          if (!fontSize) {
+              fontSize = '15px';
+          }
+          var fontWeight = document.getElementById("tdBible1").style.fontWeight;
+          if (!fontWeight) {
+              fontWeight = 'normal';
+          }
+          var txtReadInfo = document.getElementById('txtReadInfo').value;
+          if (txtReadInfo != null && -1 == txtReadInfo.search(':')) {
+              txtReadInfo = txtReadInfo + ":1";
+          }
+          var cVersion = ""; //대조본
+
+          for (var i = 0; i < 7; i++)   //대조역본정보
+          {
+              if (eval("document.all.version" + i).checked) {
+                  cVersion = cVersion + eval("document.all.version" + i).value + "^";
+              }
+          }
+
+          if (document.all.rdoReadType[1].checked == true) {
+            var regExpr = /[ ][0-9]/;
+            if (regExpr.test(document.all.txtReadInfo.value) && document.all.txtReadInfo.value != '') {
+              location.href = "korbibReadpage.php?version=" + version + "&txtReadInfo=" + txtReadInfo + "&rdoReadType=2" + "&cVersion=" + cVersion + "&fontSize=" + fontSize;
+            }
+            else {
+              var clickedText = document.all.txtReadInfo.value.trim();
+              var clickedElement = $('a').filter(function() {
+                return $(this).text().trim() === clickedText;
+              }).first();
+              
+              if (clickedElement.length) {
+                var fullReference = getFullReference(clickedElement);
+                if (fullReference) {
+                  location.href = "korbibReadpage.php?version=" + version + "&txtReadInfo=" + fullReference + "&rdoReadType=2" + "&cVersion=" + cVersion + "&fontSize=" + fontSize;
+                } else {
+                  alert("형식에 맞는 정보를 입력하여 주십시요.\n\n            예)창 1:2");
+                }
+              } else {
+                alert("형식에 맞는 정보를 입력하여 주십시요.\n\n            예)창 1:2");
+              }
+            }
+          }
+          else {
+              location.href = "korbibReadpage.php?version=" + version + "&book=" + book + "&chap=" + chap + "&sec=" + sec + "&cVersion=" + cVersion + "&fontSize=" + fontSize + '&fontWeight=' + fontWeight;
+          }
+      }
+      
+      function getFullReference(clickedElement) {
+        var siblings = clickedElement.parent().children('a');
+        var index = siblings.index(clickedElement);
+        var bookName = '';
+        var chapterNum = '';
+        var clickedText = clickedElement.text().trim();
+
+
+        for (var i = index; i >= 0; i--) {
+          var currentText = $(siblings[i]).text().trim();
+          
+          if (/^[가-힣]+\s\d+:\d+/.test(currentText)) {
+            var parts = currentText.split(' ');
+            bookName = parts[0];
+            chapterNum = parts[1].split(':')[0];
+            break;
+          } else if (/^[가-힣]+\s\d+:/.test(currentText)) {
+            var parts = currentText.split(' ');
+            bookName = parts[0];
+            chapterNum = parts[1].split(':')[0];
+            break;
+          }
+        }
+
+        var result;
+        if (bookName && chapterNum) {
+          if (/^\d+:\d+(-\d+)?$/.test(clickedText)) {
+            // 클릭된 텍스트가 새로운 장 번호를 포함하는 경우
+            result = bookName + ' ' + clickedText;
+          } else if (/^\d+(-\d+)?$/.test(clickedText)) {
+            // 클릭된 텍스트가 절 번호만 포함하는 경우
+            result = bookName + ' ' + chapterNum + ':' + clickedText;
+          } else {
+            result = bookName + ' ' + clickedText;
+          }
+        } else {
+          result = null;
+        }
+
+        return result;
+      }
+
+      //동적 요소에 대한 이벤트 핸들러
+      $(document).on('click', 'a[tar]', function(e) {
+          e.preventDefault();
+          document.all.rdoReadType[1].checked = true;
+          $('#txtReadInfo').val($(this).text().trim());
+          submitCheck();
+      });
+
+      $('a').click(function () {
+          if ($(this).attr('tar')) {
+              javascript:document.all.rdoReadType[1].checked = true;
+              $('#txtReadInfo').val($(this).text());
+              submitCheck();
+          }
+      });
+
+
+      $(document).ready(function () {
+
+          initSecValue = "1";
+          initVersion("HAN");
+          ChangeBooksForRead();
+          initBook("ezr");
+          initChap("8");
+          initFontSize("2");
+          setFocus();
+          ChangeBooksForRead();
+          getSec("1");
+
+          $('#tdBible1').css({'font-weight': ''});
+          $('#tdBible2').css({'font-weight': ''});
+      });
+
+      $('#txtReadInfo').on('keypress', function (e) {
+          if (e.which === 13) {
+              submitCheck();
+              return false;
+          }
+      });
+  </script>
+  <link href="/css/alertify.css" type="text/css" rel="stylesheet">
+  <script src="/js/alertify.js"></script>
+  <script src="/bible/js/check_version.js?v=2"></script>
+</div>
+</body>
+</html>
+

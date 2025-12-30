@@ -1,0 +1,18 @@
+services:
+  postgres:
+    image: postgres:15
+    container_name: bible-postgres
+    environment:
+      POSTGRES_USER: bible
+      POSTGRES_PASSWORD: biblepassword
+      POSTGRES_DB: bible_app
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+      - ./db:/docker-entrypoint-initdb.d
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+
