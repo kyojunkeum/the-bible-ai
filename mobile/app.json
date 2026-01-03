@@ -1,0 +1,21 @@
+{
+  "expo": {
+    "name": "평안",
+    "slug": "thebibleai",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "backgroundColor": "#f6f1e9"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#f6f1e9"
+      }
+    }
+  }
+}

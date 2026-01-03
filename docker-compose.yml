@@ -1,4 +1,32 @@
 services:
+  api:
+    build: .
+    container_name: bible-api
+    environment:
+      BIBLE_DB_HOST: postgres
+      BIBLE_DB_PORT: "5432"
+      BIBLE_DB_NAME: bible_app
+      BIBLE_DB_USER: bible
+      BIBLE_DB_PASSWORD: biblepassword
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: qwen2:7b
+    ports:
+      - "9000:9000"
+    volumes:
+      - ./:/app
+    depends_on:
+      - postgres
+      - ollama
+    command: uvicorn api.main:app --reload --host 0.0.0.0 --port 9000
+    restart: unless-stopped
+  ollama:
+    image: ollama/ollama:latest
+    container_name: bible-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+    restart: unless-stopped
   postgres:
     image: postgres:15
     container_name: bible-postgres
@@ -15,4 +43,4 @@ services:
 
 volumes:
   pgdata:
-
+  ollama:

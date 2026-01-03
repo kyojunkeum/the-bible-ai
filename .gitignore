@@ -9,6 +9,7 @@ __pycache__/
 # DB dumps
 *.sql
 *.sql.gz
+pgdata/
 
 # Crawled raw html
 data/raw_html/

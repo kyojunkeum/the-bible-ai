@@ -20,6 +20,10 @@ def _expected_from_html(html: str):
 
     expected = []
 
+    # 숨김 주석 제거(팝업 주석)
+    for d in container.select("div.D2"):
+        d.decompose()
+
     # 절 단위 span (직계)
     for span in container.find_all("span", recursive=False):
         num_tag = span.select_one("span.number")

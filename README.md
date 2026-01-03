@@ -52,6 +52,7 @@ DB에 저장된 텍스트만 “성경 본문”으로 사용
 
 3. 디렉토리 구조
 TheBibleAI/
+├─ api/                        # FastAPI 서버
 ├─ db/                         # DB 스키마 및 seed
 │  ├─ 00_extensions.sql
 │  ├─ 10_schema.sql
@@ -67,6 +68,8 @@ TheBibleAI/
 │  └─ run_etl.py               # 메인 실행
 │
 ├─ requirements.txt
+├─ docs/
+│  └─ DETAILED_DESIGN.md        # 상세 설계 명세서
 └─ README.md
 
 4. 데이터베이스 개요
@@ -175,3 +178,25 @@ RAG 기반 주제별 말씀 추천
  전체 본문 적재
 
  검증 리포트 작성
+
+12. 문서
+
+- 상세 설계 명세서: docs/DETAILED_DESIGN.md
+
+13. Web/Mobile MVP
+
+Web (React + Vite)
+
+- 위치: web/
+- 실행(패키지 설치 필요):
+  - npm install
+  - npm run dev
+- API 주소 설정: VITE_API_BASE (예: http://localhost:9000)
+
+Mobile (React Native + Expo)
+
+- 위치: mobile/
+- 실행(패키지 설치 필요):
+  - npm install
+  - npm start
+- API 주소 설정: EXPO_PUBLIC_API_BASE (예: http://<WSL_IP>:9000)
