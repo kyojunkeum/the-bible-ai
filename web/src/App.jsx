@@ -2,11 +2,97 @@ import React, { useEffect, useMemo, useState } from "react";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:9000";
 const TABS = ["Reader", "Search", "Chat"];
+const VERSION_OPTIONS = [
+  { id: "krv", label: "개역한글판" },
+  { id: "eng-web", label: "WEB" }
+];
+const EN_BOOK_NAME_BY_OSIS = {
+  GEN: "Genesis",
+  EXO: "Exodus",
+  LEV: "Leviticus",
+  NUM: "Numbers",
+  DEU: "Deuteronomy",
+  JOS: "Joshua",
+  JDG: "Judges",
+  RUT: "Ruth",
+  "1SA": "1 Samuel",
+  "2SA": "2 Samuel",
+  "1KI": "1 Kings",
+  "2KI": "2 Kings",
+  "1CH": "1 Chronicles",
+  "2CH": "2 Chronicles",
+  EZR: "Ezra",
+  NEH: "Nehemiah",
+  EST: "Esther",
+  JOB: "Job",
+  PSA: "Psalms",
+  PRO: "Proverbs",
+  ECC: "Ecclesiastes",
+  SNG: "Song of Solomon",
+  ISA: "Isaiah",
+  JER: "Jeremiah",
+  LAM: "Lamentations",
+  EZK: "Ezekiel",
+  DAN: "Daniel",
+  HOS: "Hosea",
+  JOL: "Joel",
+  AMO: "Amos",
+  OBA: "Obadiah",
+  JON: "Jonah",
+  MIC: "Micah",
+  NAM: "Nahum",
+  HAB: "Habakkuk",
+  ZEP: "Zephaniah",
+  HAG: "Haggai",
+  ZEC: "Zechariah",
+  MAL: "Malachi",
+  MAT: "Matthew",
+  MRK: "Mark",
+  LUK: "Luke",
+  JHN: "John",
+  ACT: "Acts",
+  ROM: "Romans",
+  "1CO": "1 Corinthians",
+  "2CO": "2 Corinthians",
+  GAL: "Galatians",
+  EPH: "Ephesians",
+  PHP: "Philippians",
+  COL: "Colossians",
+  "1TH": "1 Thessalonians",
+  "2TH": "2 Thessalonians",
+  "1TI": "1 Timothy",
+  "2TI": "2 Timothy",
+  TIT: "Titus",
+  PHM: "Philemon",
+  HEB: "Hebrews",
+  JAS: "James",
+  "1PE": "1 Peter",
+  "2PE": "2 Peter",
+  "1JN": "1 John",
+  "2JN": "2 John",
+  "3JN": "3 John",
+  JUD: "Jude",
+  REV: "Revelation"
+};
 const CACHE_INDEX_KEY = "chapter_cache_index";
 const MAX_CACHE_CHAPTERS = 200;
 
 const cacheKey = (versionId, bookId, chapter) =>
   `chapter:${versionId}:${bookId}:${chapter}`;
+
+const getBookDisplayName = (book, versionId) => {
+  if (!book) return "";
+  if (versionId !== "eng-web") {
+    return book.ko_name || book.abbr || book.osis_code || "";
+  }
+  return (
+    EN_BOOK_NAME_BY_OSIS[book.osis_code] ||
+    book.ko_name ||
+    book.abbr ||
+    book.osis_code ||
+    ""
+  );
+};
 
 const loadCacheIndex = () => {
   const raw = localStorage.getItem(CACHE_INDEX_KEY);
@@ -56,6 +142,16 @@ const setCachedChapter = (versionId, bookId, chapter, payload) => {
 export default function App() {
   const [activeTab, setActiveTab] = useState("Reader");
   const [versionId, setVersionId] = useState("krv");
+  const browserLocale =
+    typeof navigator !== "undefined" && navigator.language ? navigator.language : "ko-KR";
+  const selectedVersion = useMemo(
+    () =>
+      VERSION_OPTIONS.find((version) => version.id === versionId) || {
+        id: versionId,
+        label: versionId
+      },
+    [versionId]
+  );
 
   const [books, setBooks] = useState([]);
   const [booksError, setBooksError] = useState("");
@@ -82,6 +178,19 @@ export default function App() {
     () => books.find((book) => book.book_id === Number(selectedBookId)),
     [books, selectedBookId]
   );
+  const isEnglishVersion = versionId === "eng-web";
+  const selectedBookName = useMemo(
+    () => getBookDisplayName(selectedBook, versionId),
+    [selectedBook, versionId]
+  );
+  const booksById = useMemo(
+    () => new Map(books.map((book) => [book.book_id, book])),
+    [books]
+  );
+  const getResultBookName = (item) => {
+    const book = booksById.get(item.book_id);
+    return getBookDisplayName(book, versionId) || item.book_name;
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -158,7 +267,7 @@ export default function App() {
     const res = await fetch(`${API_BASE}/v1/chat/conversations`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ device_id: "web", locale: "ko-KR", version_id: versionId })
+      body: JSON.stringify({ device_id: "web", locale: browserLocale, version_id: versionId })
     });
     if (!res.ok) throw new Error("세션 생성 실패");
     const data = await res.json();
@@ -204,7 +313,7 @@ export default function App() {
         <div className="hero-card">
           <div className="card-label">API BASE</div>
           <div className="card-value">{API_BASE}</div>
-          <div className="card-meta">Version: {versionId}</div>
+          <div className="card-meta">Version: {selectedVersion.label}</div>
           {conversationId && <div className="card-meta">Session: {conversationId}</div>}
         </div>
       </header>
@@ -228,6 +337,16 @@ export default function App() {
               <h2>읽기</h2>
               {booksError && <div className="error">{booksError}</div>}
               <label>
+                버전
+                <select value={versionId} onChange={(e) => setVersionId(e.target.value)}>
+                  {VERSION_OPTIONS.map((version) => (
+                    <option key={version.id} value={version.id}>
+                      {version.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
                 책
                 <select
                   value={selectedBookId}
@@ -235,13 +354,13 @@ export default function App() {
                 >
                   {books.map((book) => (
                     <option key={book.book_id} value={book.book_id}>
-                      {book.ko_name}
+                      {getBookDisplayName(book, versionId)}
                     </option>
                   ))}
                 </select>
               </label>
               <label>
-                장
+                {isEnglishVersion ? "Chapter" : "장"}
                 <input
                   type="number"
                   min="1"
@@ -250,14 +369,20 @@ export default function App() {
                 />
               </label>
               <button className="primary" onClick={loadChapter} disabled={chapterLoading}>
-                {chapterLoading ? "불러오는 중" : "장 읽기"}
+                {chapterLoading
+                  ? isEnglishVersion
+                    ? "Loading"
+                    : "불러오는 중"
+                  : isEnglishVersion
+                    ? "Read chapter"
+                    : "장 읽기"}
               </button>
               {chapterError && <div className="error">{chapterError}</div>}
               {chapterNotice && <div className="meta">{chapterNotice}</div>}
             </div>
             <div className="content">
               <div className="content-header">
-                <h3>{selectedBook ? selectedBook.ko_name : ""}</h3>
+                <h3>{selectedBookName}</h3>
                 {chapterData?.content_hash && (
                   <span className="pill">Hash: {chapterData.content_hash}</span>
                 )}
@@ -279,6 +404,16 @@ export default function App() {
           <div className="grid">
             <div className="controls">
               <h2>검색</h2>
+              <label>
+                버전
+                <select value={versionId} onChange={(e) => setVersionId(e.target.value)}>
+                  {VERSION_OPTIONS.map((version) => (
+                    <option key={version.id} value={version.id}>
+                      {version.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <label>
                 키워드
                 <input
@@ -302,7 +437,7 @@ export default function App() {
                   {searchResults.map((item, idx) => (
                     <li key={`${item.book_id}-${item.chapter}-${item.verse}-${idx}`}>
                       <div className="list-title">
-                        {item.book_name} {item.chapter}:{item.verse}
+                        {getResultBookName(item)} {item.chapter}:{item.verse}
                       </div>
                       <div
                         className="list-snippet"

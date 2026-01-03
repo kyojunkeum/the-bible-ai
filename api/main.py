@@ -31,6 +31,7 @@ from api.chat import (
     log_chat_event,
     log_search_event,
     log_verse_cited,
+    select_version_id,
     retrieve_citations,
     store,
     summarize_messages,
@@ -309,10 +310,11 @@ def search(
 
 @app.post("/v1/chat/conversations", response_model=ChatCreateResponse)
 def create_conversation(payload: ChatCreateRequest, conn=Depends(get_conn)):
+    effective_version_id = select_version_id(payload.locale)
     record = store.create(
         payload.device_id,
         payload.locale,
-        payload.version_id,
+        effective_version_id,
         store_messages=payload.store_messages,
         conn=conn,
     )
@@ -364,6 +366,7 @@ def post_message(conversation_id: str, payload: ChatMessageRequest, conn=Depends
     if not record:
         raise HTTPException(status_code=404, detail="conversation not found")
 
+    citation_version_id = select_version_id(record.get("locale"))
     sanitized_message = _mask_pii(payload.user_message)
     store.add_message(conversation_id, "user", sanitized_message, conn=conn)
     log_chat_event(
@@ -382,14 +385,14 @@ def post_message(conversation_id: str, payload: ChatMessageRequest, conn=Depends
         if vs_end == vs_start:
             verse_payload = _fetch_book_and_verse(
                 conn,
-                record.get("version_id", "krv"),
+                citation_version_id,
                 book_name,
                 ch,
                 vs_start,
             )
             citations.append(
                 {
-                    "version_id": record.get("version_id", "krv"),
+                    "version_id": citation_version_id,
                     "book_id": verse_payload["book_id"],
                     "book_name": verse_payload["book_name"],
                     "chapter": verse_payload["chapter"],
@@ -401,7 +404,7 @@ def post_message(conversation_id: str, payload: ChatMessageRequest, conn=Depends
         else:
             verse_payload = _fetch_book_and_range(
                 conn,
-                record.get("version_id", "krv"),
+                citation_version_id,
                 book_name,
                 ch,
                 vs_start,
@@ -410,7 +413,7 @@ def post_message(conversation_id: str, payload: ChatMessageRequest, conn=Depends
             for item in verse_payload["verses"]:
                 citations.append(
                     {
-                        "version_id": record.get("version_id", "krv"),
+                        "version_id": citation_version_id,
                         "book_id": verse_payload["book_id"],
                         "book_name": verse_payload["book_name"],
                         "chapter": verse_payload["chapter"],
@@ -507,7 +510,7 @@ def post_message(conversation_id: str, payload: ChatMessageRequest, conn=Depends
         gating["source"] = "degraded"
     citations = []
     if gating.get("need_verse"):
-        citations = retrieve_citations(conn, record.get("version_id", "krv"), sanitized_message)
+        citations = retrieve_citations(conn, citation_version_id, sanitized_message)
         assistant_message = append_citations_to_response(assistant_message, citations)
     citations = _verify_citations(conn, citations)
     assistant_message, citations = enforce_exact_citations(assistant_message, citations)

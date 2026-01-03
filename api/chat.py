@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 import time
 
 import requests
+from psycopg2.extras import RealDictCursor
 
 from etl.utils import normalize_text
 
@@ -24,6 +25,14 @@ LOG_ID_SALT = os.getenv("LOG_ID_SALT", "")
 SUMMARY_MAX_CHARS = 800
 SUMMARY_TRIGGER_TURNS = 30
 RECENT_TURNS = 8
+
+
+def select_version_id(locale: Optional[str]) -> str:
+    if locale and locale.lower().startswith("ko"):
+        return "krv"
+    if locale:
+        return "eng-web"
+    return "krv"
 
 RISK_PATTERNS = [
     r"자해",
@@ -467,6 +476,73 @@ def build_assistant_message(
 store = ConversationStore()
 
 
+FALLBACK_REFERENCES = [
+    {"book_id": 19, "chapter": 23, "verse": 1},
+    {"book_id": 40, "chapter": 11, "verse": 28},
+    {"book_id": 50, "chapter": 4, "verse": 6},
+    {"book_id": 23, "chapter": 41, "verse": 10},
+]
+
+
+def _fallback_citations(conn, version_id: str, limit: int) -> List[dict]:
+    citations = []
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        for ref in FALLBACK_REFERENCES:
+            cur.execute(
+                """
+                SELECT v.book_id, b.ko_name AS book_name, v.chapter, v.verse, v.text
+                FROM bible_verse v
+                JOIN bible_book b
+                  ON b.version_id = v.version_id AND b.book_id = v.book_id
+                WHERE v.version_id = %s AND v.book_id = %s AND v.chapter = %s AND v.verse = %s
+                """,
+                (version_id, ref["book_id"], ref["chapter"], ref["verse"]),
+            )
+            row = cur.fetchone()
+            if not row:
+                continue
+            citations.append(
+                {
+                    "version_id": version_id,
+                    "book_id": row["book_id"],
+                    "book_name": row["book_name"],
+                    "chapter": row["chapter"],
+                    "verse_start": row["verse"],
+                    "verse_end": row["verse"],
+                    "text": row["text"],
+                }
+            )
+            if len(citations) >= limit:
+                return citations
+
+        cur.execute(
+            """
+            SELECT v.book_id, b.ko_name AS book_name, v.chapter, v.verse, v.text
+            FROM bible_verse v
+            JOIN bible_book b
+              ON b.version_id = v.version_id AND b.book_id = v.book_id
+            WHERE v.version_id = %s
+            ORDER BY v.book_id, v.chapter, v.verse
+            LIMIT %s
+            """,
+            (version_id, limit),
+        )
+        rows = cur.fetchall()
+    for row in rows:
+        citations.append(
+            {
+                "version_id": version_id,
+                "book_id": row["book_id"],
+                "book_name": row["book_name"],
+                "chapter": row["chapter"],
+                "verse_start": row["verse"],
+                "verse_end": row["verse"],
+                "text": row["text"],
+            }
+        )
+    return citations
+
+
 def retrieve_citations(conn, version_id: str, user_message: str, limit: int = 2) -> List[dict]:
     keywords = extract_keywords(user_message)
     topics = infer_topics(user_message)
@@ -521,6 +597,8 @@ def retrieve_citations(conn, version_id: str, user_message: str, limit: int = 2)
         )
         if len(citations) >= limit:
             break
+    if not citations:
+        return _fallback_citations(conn, version_id, limit)
     return citations
 
 

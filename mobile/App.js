@@ -14,7 +14,78 @@ import {
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 
 const API_BASE = process.env.EXPO_PUBLIC_API_BASE || "http://localhost:9000";
-const VERSION_OPTIONS = [{ id: "krv", label: "개역한글판" }];
+const VERSION_OPTIONS = [
+  { id: "krv", label: "개역한글판" },
+  { id: "eng-web", label: "WEB" }
+];
+const EN_BOOK_NAME_BY_OSIS = {
+  GEN: "Genesis",
+  EXO: "Exodus",
+  LEV: "Leviticus",
+  NUM: "Numbers",
+  DEU: "Deuteronomy",
+  JOS: "Joshua",
+  JDG: "Judges",
+  RUT: "Ruth",
+  "1SA": "1 Samuel",
+  "2SA": "2 Samuel",
+  "1KI": "1 Kings",
+  "2KI": "2 Kings",
+  "1CH": "1 Chronicles",
+  "2CH": "2 Chronicles",
+  EZR: "Ezra",
+  NEH: "Nehemiah",
+  EST: "Esther",
+  JOB: "Job",
+  PSA: "Psalms",
+  PRO: "Proverbs",
+  ECC: "Ecclesiastes",
+  SNG: "Song of Solomon",
+  ISA: "Isaiah",
+  JER: "Jeremiah",
+  LAM: "Lamentations",
+  EZK: "Ezekiel",
+  DAN: "Daniel",
+  HOS: "Hosea",
+  JOL: "Joel",
+  AMO: "Amos",
+  OBA: "Obadiah",
+  JON: "Jonah",
+  MIC: "Micah",
+  NAM: "Nahum",
+  HAB: "Habakkuk",
+  ZEP: "Zephaniah",
+  HAG: "Haggai",
+  ZEC: "Zechariah",
+  MAL: "Malachi",
+  MAT: "Matthew",
+  MRK: "Mark",
+  LUK: "Luke",
+  JHN: "John",
+  ACT: "Acts",
+  ROM: "Romans",
+  "1CO": "1 Corinthians",
+  "2CO": "2 Corinthians",
+  GAL: "Galatians",
+  EPH: "Ephesians",
+  PHP: "Philippians",
+  COL: "Colossians",
+  "1TH": "1 Thessalonians",
+  "2TH": "2 Thessalonians",
+  "1TI": "1 Timothy",
+  "2TI": "2 Timothy",
+  TIT: "Titus",
+  PHM: "Philemon",
+  HEB: "Hebrews",
+  JAS: "James",
+  "1PE": "1 Peter",
+  "2PE": "2 Peter",
+  "1JN": "1 John",
+  "2JN": "2 John",
+  "3JN": "3 John",
+  JUD: "Jude",
+  REV: "Revelation"
+};
 const TABS = [
   { key: "Reader", label: "홈" },
   { key: "Search", label: "검색" },
@@ -27,9 +98,35 @@ const STORAGE_KEYS = {
   tab: "bible:last_tab"
 };
 
+const getBookDisplayName = (book, versionId) => {
+  if (!book) return "";
+  if (versionId !== "eng-web") {
+    return book.ko_name || book.abbr || book.osis_code || "";
+  }
+  return (
+    EN_BOOK_NAME_BY_OSIS[book.osis_code] ||
+    book.ko_name ||
+    book.abbr ||
+    book.osis_code ||
+    ""
+  );
+};
+
+const getDeviceLocale = () => {
+  if (typeof Intl !== "undefined" && Intl.DateTimeFormat) {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().locale;
+    } catch (_) {
+      return "ko-KR";
+    }
+  }
+  return "ko-KR";
+};
+
 export default function App() {
   const [activeTab, setActiveTab] = useState("Reader");
   const [versionId, setVersionId] = useState("krv");
+  const deviceLocale = useMemo(() => getDeviceLocale(), []);
   const [books, setBooks] = useState([]);
   const [booksError, setBooksError] = useState("");
   const [booksLoading, setBooksLoading] = useState(false);
@@ -96,6 +193,19 @@ export default function App() {
     () => books.find((book) => book.book_id === Number(selectedBookId)),
     [books, selectedBookId]
   );
+  const isEnglishVersion = versionId === "eng-web";
+  const selectedBookName = useMemo(
+    () => getBookDisplayName(selectedBook, versionId),
+    [selectedBook, versionId]
+  );
+  const booksById = useMemo(
+    () => new Map(books.map((book) => [book.book_id, book])),
+    [books]
+  );
+  const getResultBookName = (item) => {
+    const book = booksById.get(item.book_id);
+    return getBookDisplayName(book, versionId) || item.book_name;
+  };
 
   const chapterOptions = useMemo(() => {
     const count = Number(selectedBook?.chapter_count || 0);
@@ -264,7 +374,7 @@ export default function App() {
     const res = await fetch(`${API_BASE}/v1/chat/conversations`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ device_id: "mobile", locale: "ko-KR", version_id: versionId })
+      body: JSON.stringify({ device_id: "mobile", locale: deviceLocale, version_id: versionId })
     });
     if (!res.ok) throw new Error("세션 생성 실패");
     const data = await res.json();
@@ -338,12 +448,12 @@ export default function App() {
                   <Text style={styles.bookSelectValue}>
                     {booksLoading
                       ? "불러오는 중..."
-                      : selectedBook?.ko_name || "책 목록이 없습니다"}
+                      : selectedBookName || "책 목록이 없습니다"}
                   </Text>
                 </TouchableOpacity>
                 <View style={styles.row}>
                   <View style={styles.inputWrap}>
-                    <Text style={styles.label}>장</Text>
+                    <Text style={styles.label}>{isEnglishVersion ? "Chapter" : "장"}</Text>
                     <TouchableOpacity
                       style={[
                         styles.selectInput,
@@ -359,14 +469,22 @@ export default function App() {
                         ]}
                       >
                         {selectedBook?.chapter_count
-                          ? `${chapter}장 / ${selectedBook.chapter_count}장`
+                          ? isEnglishVersion
+                            ? `Chapter ${chapter} / ${selectedBook.chapter_count}`
+                            : `${chapter}장 / ${selectedBook.chapter_count}장`
                           : "책을 먼저 선택하세요"}
                       </Text>
                     </TouchableOpacity>
                   </View>
                   <TouchableOpacity style={styles.primary} onPress={loadChapter}>
                     <Text style={styles.primaryText}>
-                      {chapterLoading ? "불러오는 중" : "장 읽기"}
+                      {chapterLoading
+                        ? isEnglishVersion
+                          ? "Loading"
+                          : "불러오는 중"
+                        : isEnglishVersion
+                          ? "Read chapter"
+                          : "장 읽기"}
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -374,8 +492,10 @@ export default function App() {
                 {chapterNotice ? <Text style={styles.meta}>{chapterNotice}</Text> : null}
                 <View style={styles.card}>
                   <Text style={styles.cardTitle}>
-                    {selectedBook?.ko_name
-                      ? `${selectedBook.ko_name} ${chapter}장`
+                    {selectedBookName
+                      ? isEnglishVersion
+                        ? `${selectedBookName} ${chapter}`
+                        : `${selectedBookName} ${chapter}장`
                       : "본문"}
                   </Text>
                   {chapterData?.verses?.map((verse) => (
@@ -414,7 +534,7 @@ export default function App() {
                     searchResults.map((item, idx) => (
                       <View key={`${item.book_id}-${idx}`} style={styles.resultItem}>
                         <Text style={styles.resultTitle}>
-                          {item.book_name} {item.chapter}:{item.verse}
+                          {getResultBookName(item)} {item.chapter}:{item.verse}
                         </Text>
                         <Text style={styles.resultSnippet}>{item.snippet || item.text}</Text>
                       </View>
@@ -535,7 +655,7 @@ export default function App() {
                             selectedBookId === book.book_id && styles.bookOptionTextActive
                           ]}
                         >
-                          {book.ko_name} ({book.abbr})
+                          {getBookDisplayName(book, versionId)} ({isEnglishVersion ? book.osis_code : book.abbr})
                         </Text>
                       </TouchableOpacity>
                     ))}
@@ -580,7 +700,7 @@ export default function App() {
                             versionId === version.id && styles.bookOptionTextActive
                           ]}
                         >
-                          {version.label} ({version.id})
+                          {version.label}
                         </Text>
                       </TouchableOpacity>
                     ))}
@@ -603,7 +723,13 @@ export default function App() {
             <View style={styles.modalBackdrop}>
               <View style={styles.modalCard}>
                 <Text style={styles.modalTitle}>
-                  {selectedBook?.ko_name ? `${selectedBook.ko_name} 장 선택` : "장 선택"}
+                  {selectedBookName
+                    ? isEnglishVersion
+                      ? `${selectedBookName} - Select chapter`
+                      : `${selectedBookName} 장 선택`
+                    : isEnglishVersion
+                      ? "Select chapter"
+                      : "장 선택"}
                 </Text>
                 <ScrollView style={styles.modalList}>
                   <View style={styles.chapterGrid}>
@@ -625,12 +751,16 @@ export default function App() {
                             Number(chapter) === num && styles.chapterChipTextActive
                           ]}
                         >
-                          {num}장
+                          {isEnglishVersion ? `Chapter ${num}` : `${num}장`}
                         </Text>
                       </TouchableOpacity>
                     ))}
                     {!chapterOptions.length && (
-                      <Text style={styles.empty}>장 목록을 불러오지 못했습니다.</Text>
+                      <Text style={styles.empty}>
+                        {isEnglishVersion
+                          ? "Unable to load chapters."
+                          : "장 목록을 불러오지 못했습니다."}
+                      </Text>
                     )}
                   </View>
                 </ScrollView>
