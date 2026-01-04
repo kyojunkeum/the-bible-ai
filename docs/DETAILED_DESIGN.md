@@ -109,6 +109,7 @@
 - 북마크: (version_id, book_id, chapter, verse)
 - 메모: 동일 키 + memo_text, created_at
 - 기본은 로컬만(요구사항 FR-042)
+- 서버 저장은 옵션(디바이스 ID 기반)으로 제공 가능
 - 확장: 계정 도입 시 동기화 옵션
 
 ---
@@ -306,15 +307,20 @@ Step C. 구절 인용 필요성 판단(Gating)
 
 - LLM에 바로 생성시키지 말고, 먼저 인용이 필요한지/어떤 주제인지 분류 프롬프트로 판단
 - 출력: { need_verse: true/false, topics:[...], emotions:[...], risk_flags:[...] }
+- 룰 기반 보정: 명시적 요청/강한 감정/정리 국면이면 인용 시도, 정보성 질문/잡담이면 인용 제외
 
 Step D. 구절 검색(Retrieval)
 
 - need_verse=true인 경우에만 수행
 - 검색 전략(권장):
-  1. 키워드 기반: 사용자 메시지 + 요약에서 핵심 키워드 추출
+  1. 키워드 기반: 형태소 분석으로 사용자 메시지 + 요약에서 핵심 키워드 추출
   2. 토픽 기반: 불안/두려움/관계/상실/죄책감 등 → 주제 사전(룰)
-  3. FTS 상위 K개(예: 20개) 가져오기
-  4. Rerank(간단 LLM 또는 룰): 지금 상황에 위로/방향성이 있는가
+  3. 동의어 확장: `search_synonym` 테이블 또는 룰 기반 확장
+  4. FTS 상위 K개(예: 20개) 가져오기
+  5. Vector 후보: `bible_verse_window`에서 임베딩 검색 TopK
+  6. Rerank(LLM 또는 Ko-BERT): 지금 상황에 위로/방향성이 있는가
+- Vector 인덱스는 3~7절 윈도우(기본 5절) 슬라이딩으로 생성
+- 리랭커 모드: `RERANK_MODE=llm|ko-bert|off` (ko-bert는 별도 모델/의존성 필요)
 
 Step E. 구절 포함 응답 생성(Grounded Generation)
 

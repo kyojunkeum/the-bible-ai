@@ -12,15 +12,27 @@ from psycopg2.extras import RealDictCursor
 
 from etl.utils import normalize_text
 
-from api.search import search_verses
+from api.search import search_verses, search_verses_vector
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1")
 OLLAMA_TIMEOUT_SEC = float(os.getenv("OLLAMA_TIMEOUT_SEC", "20"))
+OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "768"))
+EMBEDDING_TIMEOUT_SEC = float(os.getenv("EMBEDDING_TIMEOUT_SEC", "5"))
 EVENT_LOG_PATH = os.getenv("EVENT_LOG_PATH", "logs/events.log")
 LLM_SLOW_MS = int(os.getenv("LLM_SLOW_MS", "2000"))
 RETRIEVAL_SLOW_MS = int(os.getenv("RETRIEVAL_SLOW_MS", "500"))
 LOG_ID_SALT = os.getenv("LOG_ID_SALT", "")
+ENABLE_MORPH_ANALYZER = os.getenv("ENABLE_MORPH_ANALYZER", "1") == "1"
+MAX_QUERY_TERMS = int(os.getenv("MAX_QUERY_TERMS", "20"))
+VECTOR_ENABLED = os.getenv("VECTOR_ENABLED", "1") == "1"
+VECTOR_TOPK = int(os.getenv("VECTOR_TOPK", "50"))
+VECTOR_WINDOW_SIZE = int(os.getenv("VECTOR_WINDOW_SIZE", "5"))
+RERANK_MODE = os.getenv("RERANK_MODE", "llm")
+RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "30"))
+RERANK_TOP_N = int(os.getenv("RERANK_TOP_N", "3"))
+KOBERT_MODEL_ID = os.getenv("KOBERT_MODEL_ID", "skt/kobert-base-v1")
 
 SUMMARY_MAX_CHARS = 800
 SUMMARY_TRIGGER_TURNS = 30
@@ -33,6 +45,18 @@ def select_version_id(locale: Optional[str]) -> str:
     if locale:
         return "eng-web"
     return "krv"
+
+
+LANG_KO_RE = re.compile(r"[가-힣]")
+LANG_OTHER_RE = re.compile(r"[A-Za-z\u3040-\u30ff\u3400-\u9fff]")
+
+
+def select_citation_version_id(locale: Optional[str], text: str) -> str:
+    if text and LANG_KO_RE.search(text):
+        return "krv"
+    if text and LANG_OTHER_RE.search(text):
+        return "eng-web"
+    return select_version_id(locale)
 
 RISK_PATTERNS = [
     r"자해",
@@ -60,6 +84,52 @@ TOPIC_LEXICON = {
     "relationships": ["관계", "가족", "부부", "친구", "이별"],
     "peace": ["평안", "쉼", "안식", "안정"],
 }
+
+SYNONYM_MAP = {
+    "불안": ["근심", "염려", "걱정"],
+    "두려": ["무서움", "공포"],
+    "슬프": ["우울", "비통", "눈물"],
+    "상실": ["이별", "잃음"],
+    "분노": ["화", "격분"],
+    "죄책": ["책망", "정죄"],
+    "용서": ["용납", "사함"],
+    "관계": ["갈등", "다툼"],
+    "평안": ["안식", "쉼", "안정"],
+}
+
+CLOSING_KEYWORDS = [
+    "정리",
+    "마무리",
+    "결론",
+    "기도",
+    "기도해",
+    "정돈",
+]
+
+INFO_QUESTION_KEYWORDS = [
+    "뜻",
+    "의미",
+    "정의",
+    "설명",
+    "알려줘",
+    "정보",
+    "무엇",
+    "뭐",
+    "어떤",
+]
+
+SMALL_TALK_KEYWORDS = [
+    "안녕",
+    "고마워",
+    "감사",
+    "잘 지내",
+    "좋아",
+    "오케이",
+    "ok",
+    "thanks",
+]
+
+SMALL_TALK_PATTERN = re.compile(r"(ㅋ{2,}|ㅎ{2,})")
 
 VERSE_REQUEST_KEYWORDS = [
     "말씀",
@@ -284,6 +354,89 @@ def _risk_flags(text: str) -> List[str]:
     return flags
 
 
+KIWI = None
+KIWI_ERROR = False
+KIWI_POS_TAGS = {"NNG", "NNP", "NNB", "VV", "VA", "VX"}
+KOBERT_TOKENIZER = None
+KOBERT_MODEL = None
+KOBERT_ERROR = False
+
+
+def _get_kiwi():
+    global KIWI, KIWI_ERROR
+    if not ENABLE_MORPH_ANALYZER or KIWI_ERROR:
+        return None
+    if KIWI is None:
+        try:
+            from kiwipiepy import Kiwi
+
+            KIWI = Kiwi()
+        except Exception:
+            KIWI_ERROR = True
+            return None
+    return KIWI
+
+
+def _get_kobert():
+    global KOBERT_TOKENIZER, KOBERT_MODEL, KOBERT_ERROR
+    if KOBERT_ERROR:
+        return None, None
+    if KOBERT_MODEL is None or KOBERT_TOKENIZER is None:
+        try:
+            import torch
+            from transformers import AutoModel, AutoTokenizer
+
+            KOBERT_TOKENIZER = AutoTokenizer.from_pretrained(KOBERT_MODEL_ID)
+            KOBERT_MODEL = AutoModel.from_pretrained(KOBERT_MODEL_ID)
+            KOBERT_MODEL.eval()
+            KOBERT_MODEL.to(torch.device("cpu"))
+        except Exception:
+            KOBERT_ERROR = True
+            return None, None
+    return KOBERT_TOKENIZER, KOBERT_MODEL
+
+
+def _embed_text(text: str) -> Optional[List[float]]:
+    if not text:
+        return None
+    payload = {"model": OLLAMA_EMBED_MODEL, "prompt": text}
+    start = time.perf_counter()
+    try:
+        res = requests.post(
+            f"{OLLAMA_URL}/api/embeddings",
+            json=payload,
+            timeout=EMBEDDING_TIMEOUT_SEC,
+        )
+        res.raise_for_status()
+        data = res.json()
+    except requests.RequestException:
+        _log_event(
+            "embedding_error",
+            {"model": OLLAMA_EMBED_MODEL, "error": "request_failed"},
+        )
+        return None
+    elapsed_ms = int((time.perf_counter() - start) * 1000)
+    _log_event(
+        "embedding_latency",
+        {"model": OLLAMA_EMBED_MODEL, "elapsed_ms": elapsed_ms},
+    )
+    embedding = data.get("embedding")
+    if not isinstance(embedding, list):
+        return None
+    if EMBEDDING_DIM and len(embedding) != EMBEDDING_DIM:
+        _log_event(
+            "embedding_error",
+            {
+                "model": OLLAMA_EMBED_MODEL,
+                "error": "dimension_mismatch",
+                "expected": EMBEDDING_DIM,
+                "actual": len(embedding),
+            },
+        )
+        return None
+    return embedding
+
+
 def _tokenize(text: str) -> List[str]:
     normalized = normalize_text(text or "")
     if not normalized:
@@ -298,11 +451,40 @@ def _tokenize(text: str) -> List[str]:
     return tokens
 
 
-def extract_keywords(text: str, limit: int = 6) -> List[str]:
-    tokens = _tokenize(text)
-    counts: Dict[str, int] = {}
+def _tokenize_morph(text: str) -> List[str]:
+    normalized = normalize_text(text or "")
+    if not normalized:
+        return []
+    if not re.search(r"[가-힣]", normalized):
+        return _tokenize(normalized)
+    kiwi = _get_kiwi()
+    if not kiwi:
+        return _tokenize(normalized)
+    try:
+        tokens = kiwi.tokenize(normalized)
+    except Exception:
+        return _tokenize(normalized)
+    results = []
     for token in tokens:
-        counts[token] = counts.get(token, 0) + 1
+        if token.tag not in KIWI_POS_TAGS:
+            continue
+        term = token.form
+        if term.isdigit() or len(term) < 2:
+            continue
+        results.append(term)
+    return results
+
+
+def extract_keywords(text: str, limit: int = 6) -> List[str]:
+    return extract_keywords_from_texts([text], limit=limit)
+
+
+def extract_keywords_from_texts(texts: List[str], limit: int = 6) -> List[str]:
+    counts: Dict[str, int] = {}
+    for text in texts:
+        tokens = _tokenize_morph(text)
+        for token in tokens:
+            counts[token] = counts.get(token, 0) + 1
     ranked = sorted(counts.items(), key=lambda x: (-x[1], -len(x[0])))
     return [tok for tok, _ in ranked[:limit]]
 
@@ -320,6 +502,196 @@ def infer_topics(text: str) -> List[str]:
 def _explicit_verse_request(text: str) -> bool:
     lowered = (text or "").lower()
     return any(keyword in lowered for keyword in VERSE_REQUEST_KEYWORDS)
+
+
+def _expand_topics_to_terms(topics: List[str]) -> List[str]:
+    terms = []
+    for topic in topics:
+        terms.extend(TOPIC_LEXICON.get(topic, []))
+    seen = set()
+    deduped = []
+    for term in terms:
+        if term in seen:
+            continue
+        seen.add(term)
+        deduped.append(term)
+    return deduped
+
+
+def _fetch_synonyms_from_db(conn, terms: List[str]) -> Dict[str, List[str]]:
+    if conn is None or not terms:
+        return {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT term, synonym
+                FROM search_synonym
+                WHERE term = ANY(%s)
+                """,
+                (terms,),
+            )
+            rows = cur.fetchall()
+    except Exception:
+        return {}
+    synonyms: Dict[str, List[str]] = {}
+    for term, synonym in rows:
+        synonyms.setdefault(term, []).append(synonym)
+    return synonyms
+
+
+def _expand_synonyms(conn, terms: List[str], limit_per_term: int = 3) -> List[str]:
+    db_synonyms = _fetch_synonyms_from_db(conn, terms)
+    seen = set(terms)
+    expanded: List[str] = []
+    for term in terms:
+        candidates = db_synonyms.get(term, []) + SYNONYM_MAP.get(term, [])
+        added = 0
+        for candidate in candidates:
+            if candidate in seen or len(candidate) < 2:
+                continue
+            seen.add(candidate)
+            expanded.append(candidate)
+            added += 1
+            if added >= limit_per_term:
+                break
+    return expanded
+
+
+def _dedupe_terms(terms: List[str]) -> List[str]:
+    seen = set()
+    deduped = []
+    for term in terms:
+        if term in seen:
+            continue
+        seen.add(term)
+        deduped.append(term)
+    return deduped
+
+
+def _merge_candidates(fts_items: List[dict], vector_items: List[dict]) -> List[dict]:
+    merged: Dict[tuple, dict] = {}
+    for item in fts_items:
+        key = (item["book_id"], item["chapter"], item["verse"])
+        merged[key] = dict(item)
+        merged[key]["source"] = "fts"
+    for item in vector_items:
+        key = (item["book_id"], item["chapter"], item["verse"])
+        if key in merged:
+            merged[key]["vector_distance"] = item.get("vector_distance")
+            merged[key]["source"] = "hybrid"
+        else:
+            merged[key] = dict(item)
+    return list(merged.values())
+
+
+def _candidate_key(item: dict) -> str:
+    return f"{item['book_id']}:{item['chapter']}:{item['verse']}"
+
+
+def _candidate_order(items: List[dict], limit: int = 10) -> List[str]:
+    return [_candidate_key(item) for item in items[:limit]]
+
+
+def _rerank_delta(before: List[str], after: List[str]) -> List[dict]:
+    before_pos = {key: idx for idx, key in enumerate(before)}
+    after_pos = {key: idx for idx, key in enumerate(after)}
+    deltas = []
+    for key in after:
+        if key in before_pos and before_pos[key] != after_pos[key]:
+            deltas.append({"key": key, "from": before_pos[key], "to": after_pos[key]})
+    return deltas
+
+
+def _recent_user_texts(recent_messages: Optional[List[dict]], limit: int = 3) -> List[str]:
+    if not recent_messages:
+        return []
+    user_texts = [m.get("content", "") for m in recent_messages if m.get("role") == "user"]
+    return [text for text in user_texts[-limit:] if text]
+
+
+def _build_context_text(user_message: str, summary: str, recent_messages: Optional[List[dict]]) -> str:
+    parts = [user_message]
+    recent_texts = _recent_user_texts(recent_messages)
+    if recent_texts and recent_texts[-1] == user_message:
+        recent_texts = recent_texts[:-1]
+    parts.extend(recent_texts)
+    if summary:
+        parts.append(summary)
+    return " ".join(part for part in parts if part)
+
+
+def _is_info_request(text: str, topics: List[str]) -> bool:
+    if not text:
+        return False
+    if topics:
+        return False
+    if any(keyword in text for keyword in CLOSING_KEYWORDS):
+        return False
+    if _explicit_verse_request(text):
+        return False
+    lowered = text.lower()
+    if any(keyword in lowered for keyword in INFO_QUESTION_KEYWORDS):
+        return True
+    if "?" in text and not _explicit_verse_request(text):
+        return True
+    return False
+
+
+def _is_small_talk(text: str) -> bool:
+    if not text:
+        return False
+    lowered = text.lower()
+    if any(keyword in text for keyword in CLOSING_KEYWORDS):
+        return False
+    if _explicit_verse_request(text):
+        return False
+    if SMALL_TALK_PATTERN.search(text):
+        return True
+    if any(keyword in lowered for keyword in SMALL_TALK_KEYWORDS):
+        return True
+    return False
+
+
+def _rule_based_gating(
+    user_message: str, summary: str, recent_messages: Optional[List[dict]]
+) -> dict:
+    context_text = _build_context_text(user_message, summary, recent_messages)
+    topics = infer_topics(context_text)
+    explicit_request = _explicit_verse_request(user_message) or _explicit_verse_request(context_text)
+    closing_stage = any(keyword in context_text for keyword in CLOSING_KEYWORDS)
+    info_request = _is_info_request(user_message, topics)
+    small_talk = _is_small_talk(user_message)
+
+    trigger_reason = []
+    if explicit_request:
+        trigger_reason.append("explicit_request")
+    if topics:
+        trigger_reason.append("strong_emotion")
+    if closing_stage:
+        trigger_reason.append("closing_stage")
+
+    exclude_reason = []
+    if info_request:
+        exclude_reason.append("info_request")
+    if small_talk:
+        exclude_reason.append("small_talk")
+
+    if explicit_request:
+        need_verse = True
+    elif info_request or small_talk:
+        need_verse = False
+    elif topics or closing_stage:
+        need_verse = True
+    else:
+        need_verse = None
+
+    return {
+        "need_verse": need_verse,
+        "topics": topics,
+        "trigger_reason": trigger_reason,
+        "exclude_reason": exclude_reason,
+    }
 
 
 def _log_event(event_type: str, payload: dict) -> None:
@@ -391,6 +763,90 @@ def generate_with_ollama(prompt: str) -> Optional[str]:
     return data.get("response") or None
 
 
+def _rerank_with_llm(context_text: str, candidates: List[dict]) -> Optional[List[dict]]:
+    if not candidates:
+        return None
+    limited = candidates[:RERANK_CANDIDATES]
+    lines = []
+    for idx, item in enumerate(limited, start=1):
+        verse_label = f"{item['book_name']} {item['chapter']}:{item['verse']}"
+        lines.append(f"{idx}. ({verse_label}) {item['text']}")
+    prompt = (
+        "Return ONLY JSON. Rank candidate Bible verses by relevance to the counseling context.\n"
+        f"Context: {context_text}\n"
+        "Candidates:\n"
+        + "\n".join(lines)
+        + "\nFormat: {\"scores\":[{\"index\":1,\"score\":0.87}]}\n"
+        "Score range: 0 to 1. Include all candidates."
+    )
+    response = generate_with_ollama(prompt)
+    data = _extract_json(response or "")
+    if not data or "scores" not in data:
+        return None
+    scores = {}
+    for item in data.get("scores", []):
+        try:
+            idx = int(item.get("index"))
+            score = float(item.get("score"))
+        except (TypeError, ValueError):
+            continue
+        if 1 <= idx <= len(limited):
+            scores[idx - 1] = score
+    if not scores:
+        return None
+    reranked = []
+    for idx, item in enumerate(limited):
+        score = scores.get(idx, 0.0)
+        enriched = dict(item)
+        enriched["rerank_score"] = score
+        reranked.append(enriched)
+    reranked.sort(key=lambda x: (-x.get("rerank_score", 0.0), x.get("vector_distance", 9999.0)))
+    return reranked + candidates[len(limited) :]
+
+
+def _rerank_with_kobert(context_text: str, candidates: List[dict]) -> Optional[List[dict]]:
+    tokenizer, model = _get_kobert()
+    if not tokenizer or not model or not candidates:
+        return None
+    try:
+        import torch
+        from torch.nn.functional import cosine_similarity
+    except Exception:
+        return None
+    limited = candidates[:RERANK_CANDIDATES]
+    with torch.no_grad():
+        ctx = tokenizer(context_text, return_tensors="pt", truncation=True, max_length=256)
+        ctx_out = model(**ctx)
+        ctx_vec = ctx_out.last_hidden_state[:, 0]
+        reranked = []
+        for item in limited:
+            inputs = tokenizer(item["text"], return_tensors="pt", truncation=True, max_length=256)
+            outputs = model(**inputs)
+            vec = outputs.last_hidden_state[:, 0]
+            score = float(cosine_similarity(ctx_vec, vec).item())
+            enriched = dict(item)
+            enriched["rerank_score"] = score
+            reranked.append(enriched)
+    reranked.sort(key=lambda x: (-x.get("rerank_score", 0.0), x.get("vector_distance", 9999.0)))
+    return reranked + candidates[len(limited) :]
+
+
+def _rerank_candidates(context_text: str, candidates: List[dict]) -> List[dict]:
+    if not candidates:
+        return candidates
+    mode = (RERANK_MODE or "llm").lower()
+    if mode == "ko-bert":
+        reranked = _rerank_with_kobert(context_text, candidates)
+        if reranked:
+            return reranked
+        mode = "llm"
+    if mode == "llm":
+        reranked = _rerank_with_llm(context_text, candidates)
+        if reranked:
+            return reranked
+    return candidates
+
+
 def _extract_json(text: str) -> Optional[dict]:
     try:
         return json.loads(text)
@@ -406,33 +862,43 @@ def _extract_json(text: str) -> Optional[dict]:
     return None
 
 
-def gate_need_verse(user_message: str) -> dict:
+def gate_need_verse(
+    user_message: str, summary: str = "", recent_messages: Optional[List[dict]] = None
+) -> dict:
+    context_text = _build_context_text(user_message, summary, recent_messages)
     prompt = (
         "Return ONLY JSON. Decide if a Bible verse citation is needed.\n"
+        f"Summary: {summary}\n"
+        f"Recent: {context_text}\n"
         f"User message: {user_message}\n"
         'Format: {"need_verse": true|false, "topics": [], "user_goal": "", "risk_flags": []}'
     )
     response = generate_with_ollama(prompt)
     data = _extract_json(response or "")
+    rule = _rule_based_gating(user_message, summary, recent_messages)
     if data and isinstance(data, dict):
         data.setdefault("risk_flags", [])
         data.setdefault("topics", [])
         data.setdefault("user_goal", "")
         data.setdefault("llm_ok", True)
         data.setdefault("source", "llm")
-        if not data["topics"]:
-            data["topics"] = infer_topics(user_message)
-        if _explicit_verse_request(user_message):
-            data["need_verse"] = True
+        data["topics"] = list(dict.fromkeys(data["topics"] + rule["topics"]))
+        if rule["need_verse"] is not None:
+            data["need_verse"] = rule["need_verse"]
+            data["source"] = "rule"
+        data["trigger_reason"] = rule["trigger_reason"]
+        data["exclude_reason"] = rule["exclude_reason"]
         return data
     # Fallback rule-based gating for tests/local
     return {
-        "need_verse": _explicit_verse_request(user_message),
-        "topics": infer_topics(user_message),
+        "need_verse": rule["need_verse"] or False,
+        "topics": rule["topics"],
         "user_goal": "",
         "risk_flags": [],
         "llm_ok": False,
-        "source": "fallback",
+        "source": "rule",
+        "trigger_reason": rule["trigger_reason"],
+        "exclude_reason": rule["exclude_reason"],
     }
 
 
@@ -543,10 +1009,46 @@ def _fallback_citations(conn, version_id: str, limit: int) -> List[dict]:
     return citations
 
 
-def retrieve_citations(conn, version_id: str, user_message: str, limit: int = 2) -> List[dict]:
-    keywords = extract_keywords(user_message)
-    topics = infer_topics(user_message)
-    query_text = " ".join(keywords + topics) if keywords or topics else user_message
+def retrieve_citations(
+    conn,
+    version_id: str,
+    user_message: str,
+    summary: str = "",
+    recent_messages: Optional[List[dict]] = None,
+    limit: int = 2,
+) -> tuple[List[dict], dict]:
+    context_text = _build_context_text(user_message, summary, recent_messages)
+    recent_texts = _recent_user_texts(recent_messages)
+    if recent_texts and recent_texts[-1] == user_message:
+        recent_texts = recent_texts[:-1]
+    keyword_sources = [user_message] + recent_texts + ([summary] if summary else [])
+    keywords = extract_keywords_from_texts(keyword_sources, limit=8)
+    topics = infer_topics(context_text)
+    topic_terms = _expand_topics_to_terms(topics)
+    primary_terms = _dedupe_terms(keywords + topic_terms)
+    primary_terms = primary_terms[:MAX_QUERY_TERMS]
+    synonyms = _expand_synonyms(conn, primary_terms)
+    synonyms = synonyms[: max(0, MAX_QUERY_TERMS - len(primary_terms))]
+    query_text = " ".join(primary_terms) if primary_terms else user_message
+    selection_reason = "fts_rank"
+    if keywords:
+        selection_reason = "keyword_overlap"
+    elif synonyms:
+        selection_reason = "synonym_overlap"
+    meta = {
+        "query_text": query_text,
+        "keywords": keywords,
+        "topics": topics,
+        "synonyms": synonyms,
+        "morph_enabled": _get_kiwi() is not None,
+        "vector_enabled": VECTOR_ENABLED,
+        "vector_window_size": VECTOR_WINDOW_SIZE,
+        "vector_topk": VECTOR_TOPK,
+        "candidates": [],
+        "selection_reason": selection_reason,
+        "total_candidates": 0,
+        "failure_reason": "",
+    }
 
     start = time.perf_counter()
     results = search_verses(conn, version_id, query_text, limit * 3, 0)
@@ -561,21 +1063,80 @@ def retrieve_citations(conn, version_id: str, user_message: str, limit: int = 2)
             {"version_id": version_id, "elapsed_ms": elapsed_ms, "q": query_text},
         )
 
-    if results.get("total", 0) == 0 and query_text != user_message:
+    vector_items: List[dict] = []
+    if VECTOR_ENABLED:
+        embed = _embed_text(context_text)
+        if embed:
+            vec_start = time.perf_counter()
+            vector_items = search_verses_vector(
+                conn, version_id, embed, VECTOR_TOPK, VECTOR_WINDOW_SIZE
+            )
+            vec_elapsed_ms = int((time.perf_counter() - vec_start) * 1000)
+            _log_event(
+                "vector_latency",
+                {
+                    "version_id": version_id,
+                    "elapsed_ms": vec_elapsed_ms,
+                    "window_size": VECTOR_WINDOW_SIZE,
+                    "top_k": VECTOR_TOPK,
+                },
+            )
+        else:
+            meta["vector_error"] = "embedding_failed"
+    meta["vector_candidates"] = len(vector_items)
+    if VECTOR_ENABLED and not vector_items:
+        _log_event(
+            "vector_zero",
+            {"version_id": version_id, "window_size": VECTOR_WINDOW_SIZE},
+        )
+
+    if results.get("total", 0) == 0 and synonyms:
         _log_event("retrieval_zero", {"version_id": version_id, "q": query_text})
+        synonym_query = " ".join(synonyms)
+        results = search_verses(conn, version_id, synonym_query, limit * 3, 0)
+        meta["query_text_original"] = query_text
+        meta["query_text"] = synonym_query
+    if results.get("total", 0) == 0 and query_text != user_message:
+        _log_event("retrieval_zero", {"version_id": version_id, "q": meta["query_text"]})
         results = search_verses(conn, version_id, user_message, limit * 3, 0)
+        meta["query_text_original"] = meta["query_text"]
+        meta["query_text"] = user_message
     if results.get("total", 0) == 0:
         _log_event("retrieval_zero", {"version_id": version_id, "q": user_message})
 
-    items = results.get("items", [])
-    if keywords:
-        scored = []
-        for idx, item in enumerate(items):
-            text_norm = normalize_text(item["text"])
-            score = sum(1 for kw in keywords if kw in text_norm)
-            scored.append((score, idx, item))
-        scored.sort(key=lambda x: (-x[0], x[1]))
-        items = [item for _, _, item in scored]
+    fts_items = results.get("items", [])
+    meta["fts_candidates"] = len(fts_items)
+    items = _merge_candidates(fts_items, vector_items)
+    meta["total_candidates"] = len(items)
+    score_terms = keywords or topic_terms or synonyms
+    scored = []
+    for idx, item in enumerate(items):
+        item.setdefault("source", "fts")
+        text_norm = normalize_text(item["text"])
+        keyword_hits = sum(1 for kw in score_terms if kw in text_norm) if score_terms else 0
+        item["keyword_hits"] = keyword_hits
+        vector_distance = item.get("vector_distance")
+        vector_rank = vector_distance if vector_distance is not None else 9999.0
+        rank = item.get("rank") or 0.0
+        trgm_sim = item.get("trgm_sim") or 0.0
+        scored.append((keyword_hits, -rank, -trgm_sim, vector_rank, idx, item))
+    if score_terms or vector_items:
+        scored.sort(key=lambda x: (-x[0], x[1], x[2], x[3], x[4]))
+        items = [item for *_rest, item in scored]
+
+    pre_rerank_order = _candidate_order(items)
+    meta["rerank_mode"] = RERANK_MODE.lower()
+    meta["rerank_applied"] = False
+    meta["rerank_order_before"] = pre_rerank_order
+    if RERANK_MODE.lower() != "off" and items:
+        items = _rerank_candidates(context_text, items)
+        meta["rerank_applied"] = any("rerank_score" in item for item in items)
+        post_rerank_order = _candidate_order(items)
+        meta["rerank_order_after"] = post_rerank_order
+        meta["rerank_delta"] = _rerank_delta(pre_rerank_order, post_rerank_order)
+    else:
+        meta["rerank_order_after"] = pre_rerank_order
+        meta["rerank_delta"] = []
 
     citations = []
     seen = set()
@@ -597,9 +1158,24 @@ def retrieve_citations(conn, version_id: str, user_message: str, limit: int = 2)
         )
         if len(citations) >= limit:
             break
+    meta["candidates"] = [
+        {
+            "book_id": item["book_id"],
+            "chapter": item["chapter"],
+            "verse": item["verse"],
+            "rank": item.get("rank"),
+            "trgm_sim": item.get("trgm_sim"),
+            "vector_distance": item.get("vector_distance"),
+            "keyword_hits": item.get("keyword_hits", 0),
+            "rerank_score": item.get("rerank_score"),
+            "source": item.get("source", "fts"),
+        }
+        for item in items[:10]
+    ]
     if not citations:
-        return _fallback_citations(conn, version_id, limit)
-    return citations
+        meta["failure_reason"] = "no_results" if meta["total_candidates"] == 0 else "no_match"
+        return [], meta
+    return citations, meta
 
 
 def _format_citation(citation: dict) -> str:

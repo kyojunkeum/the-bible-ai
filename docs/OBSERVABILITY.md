@@ -14,9 +14,15 @@
 
 - `search_latency`, `search_slow`, `search_zero`
 - `retrieval_latency`, `retrieval_slow`, `retrieval_zero`
+- `embedding_latency`, `embedding_error`
+- `vector_latency`, `vector_zero`
 - `llm_latency`, `llm_slow`, `llm_error`
 - `chat_created`, `chat_message`, `chat_response`, `chat_crisis`, `chat_deleted`
 - `verse_cited`
+- `citation_attempt`, `retrieval_candidates`, `citation_selected`, `citation_failure`
+
+`retrieval_candidates` 이벤트 추가 필드:
+- `rerank_order_before`, `rerank_order_after`, `rerank_delta`
 
 ## 예시
 

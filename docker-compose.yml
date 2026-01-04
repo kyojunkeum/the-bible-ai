@@ -10,6 +10,8 @@ services:
       BIBLE_DB_PASSWORD: biblepassword
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: qwen2:7b
+      AUTH_PEPPER: c1CMQ0_gBnD6pBIIurIkKE5dTxVuS0YNIAY06DTb18o
+      AUTH_CAPTCHA_BYPASS: 8kzG3908GpxBUf-fMBhyQzNJ5OjSJBLi
     ports:
       - "9000:9000"
     volumes:
@@ -28,7 +30,7 @@ services:
       - ollama:/root/.ollama
     restart: unless-stopped
   postgres:
-    image: postgres:15
+    image: pgvector/pgvector:pg15
     container_name: bible-postgres
     environment:
       POSTGRES_USER: bible

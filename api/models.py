@@ -47,6 +47,65 @@ class SearchResponse(BaseModel):
     items: List[SearchItem]
 
 
+class BookmarkRequest(BaseModel):
+    version_id: str = "krv"
+    book_id: int
+    chapter: int
+    verse: int
+
+
+class BookmarkItem(BaseModel):
+    version_id: str
+    book_id: int
+    book_name: str
+    chapter: int
+    verse: int
+    created_at: str
+
+
+class BookmarkListResponse(BaseModel):
+    items: List[BookmarkItem]
+
+
+class BookmarkCreateResponse(BaseModel):
+    created: bool
+
+
+class BookmarkDeleteResponse(BaseModel):
+    deleted: bool
+
+
+class MemoRequest(BaseModel):
+    version_id: str = "krv"
+    book_id: int
+    chapter: int
+    verse: int
+    memo_text: str
+
+
+class MemoItem(BaseModel):
+    version_id: str
+    book_id: int
+    book_name: str
+    chapter: int
+    verse: int
+    memo_text: str
+    created_at: str
+    updated_at: str
+
+
+class MemoListResponse(BaseModel):
+    items: List[MemoItem]
+
+
+class MemoUpsertResponse(BaseModel):
+    saved: bool
+
+
+class MemoDeleteResponse(BaseModel):
+    deleted: bool
+
+
 class ChatCreateRequest(BaseModel):
     device_id: str | None = None
     locale: str | None = None
@@ -82,6 +141,8 @@ class ChatGating(BaseModel):
     risk_flags: List[str] = []
     llm_ok: bool = True
     source: str = "llm"
+    trigger_reason: List[str] = []
+    exclude_reason: List[str] = []
 
 
 class ChatMemory(BaseModel):
@@ -109,3 +170,33 @@ class ChatConversationResponse(BaseModel):
 
 class ChatDeleteResponse(BaseModel):
     deleted: bool
+
+
+class AuthRegisterRequest(BaseModel):
+    email: str
+    password: str
+    device_id: str | None = None
+
+
+class AuthLoginRequest(BaseModel):
+    email: str
+    password: str
+    captcha_token: str | None = None
+    device_id: str | None = None
+
+
+class AuthResponse(BaseModel):
+    user_id: str
+    session_token: str
+    expires_at: str
+
+
+class AuthLogoutResponse(BaseModel):
+    revoked: bool
+
+
+class AuthMeResponse(BaseModel):
+    user_id: str
+    email: str
+    created_at: str
+    last_login: str | None = None

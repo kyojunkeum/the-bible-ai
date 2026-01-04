@@ -245,11 +245,139 @@ textarea {
   line-height: 1.6;
 }
 
+.verse-row {
+  padding: 8px 0 12px;
+  border-bottom: 1px solid var(--stroke);
+}
+
+.verse-row.active {
+  background: rgba(47, 107, 91, 0.08);
+  border-radius: 16px;
+  padding: 12px;
+  border-bottom: none;
+  margin-bottom: 8px;
+}
+
+.verse-text {
+  line-height: 1.6;
+  margin-bottom: 6px;
+}
+
 .verse-num {
   display: inline-block;
   width: 28px;
   color: var(--accent);
   font-weight: 600;
+}
+
+.verse-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.verse-action {
+  border: 1px solid var(--stroke);
+  background: transparent;
+  color: var(--muted);
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.verse-action.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.verse-action:disabled,
+.ghost:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.memo-editor textarea {
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.memo-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ghost {
+  border: 1px solid var(--stroke);
+  background: transparent;
+  color: var(--ink);
+  padding: 10px 14px;
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.memo-view {
+  background: #f7efe6;
+  border-radius: 12px;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.meta-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.bookmark-panel {
+  border: 1px solid var(--stroke);
+  border-radius: 16px;
+  padding: 12px;
+  background: #fff;
+}
+
+.bookmark-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.bookmark-title {
+  font-weight: 600;
+}
+
+.bookmark-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.bookmark-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 12px;
+  background: #f7efe6;
+}
+
+.bookmark-text {
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.ghost.small {
+  padding: 6px 10px;
+  font-size: 12px;
 }
 
 .empty {

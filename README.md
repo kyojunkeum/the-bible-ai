@@ -157,6 +157,18 @@ AI 상담 챗 (DB 기반 인용 강제)
 
 RAG 기반 주제별 말씀 추천
 
+추가 인덱스(옵션)
+
+- Vector 검색을 위한 윈도우 인덱스 생성:
+  - `python etl/build_vector_index.py`
+  - 환경 변수: `VECTOR_WINDOW_SIZE`, `VECTOR_WINDOW_STRIDE`, `OLLAMA_EMBED_MODEL`
+
+리랭커/벡터 옵션
+
+- `VECTOR_ENABLED=1` (기본 on)
+- `RERANK_MODE=llm|ko-bert|off`
+- `RERANK_MODE=ko-bert` 사용 시 `transformers`, `torch` 설치 필요
+
 10. 라이선스 및 고지
 
 사용 본문: 성경전서 개역한글판

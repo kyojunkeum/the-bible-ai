@@ -1,5 +1,6 @@
 import os
 import time
+from datetime import datetime, timezone
 from typing import Optional
 
 import psycopg2
@@ -11,6 +12,11 @@ from fastapi.responses import JSONResponse
 
 from api.config import API_TITLE, API_VERSION, DB
 from api.models import (
+    AuthLoginRequest,
+    AuthLogoutResponse,
+    AuthMeResponse,
+    AuthRegisterRequest,
+    AuthResponse,
     BooksResponse,
     ChapterResponse,
     ChatConversationResponse,
@@ -19,8 +25,40 @@ from api.models import (
     ChatDeleteResponse,
     ChatMessageRequest,
     ChatMessageResponse,
+    BookmarkRequest,
+    BookmarkItem,
+    BookmarkListResponse,
+    BookmarkCreateResponse,
+    BookmarkDeleteResponse,
+    MemoRequest,
+    MemoItem,
+    MemoListResponse,
+    MemoUpsertResponse,
+    MemoDeleteResponse,
     RefResponse,
     SearchResponse,
+)
+from api.auth import (
+    create_session,
+    create_user,
+    clear_login_attempt,
+    get_session,
+    get_login_attempt,
+    get_user_by_email,
+    get_user_by_id,
+    hash_password,
+    is_login_blocked,
+    login_retry_after,
+    normalize_email,
+    needs_password_upgrade,
+    record_login_failure,
+    requires_captcha,
+    revoke_session,
+    touch_session,
+    update_password_hash,
+    validate_email,
+    verify_captcha_token,
+    verify_password,
 )
 from api.chat import (
     append_citations_to_response,
@@ -32,6 +70,7 @@ from api.chat import (
     log_search_event,
     log_verse_cited,
     select_version_id,
+    select_citation_version_id,
     retrieve_citations,
     store,
     summarize_messages,
@@ -92,6 +131,43 @@ def get_conn():
         yield conn
     finally:
         conn.close()
+
+
+def _get_bearer_token(request: Request) -> str | None:
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header:
+        return None
+    scheme, _, token = auth_header.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        return None
+    return token
+
+
+def _get_client_ip(request: Request) -> str:
+    xff = request.headers.get("X-Forwarded-For", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    if request.client:
+        return request.client.host
+    return "unknown"
+
+
+def require_user(request: Request, conn=Depends(get_conn)) -> dict:
+    token = _get_bearer_token(request)
+    if not token:
+        raise HTTPException(status_code=401, detail="auth required")
+    session = get_session(conn, token)
+    if not session:
+        raise HTTPException(status_code=401, detail="invalid session")
+    expires_at = session.get("expires_at")
+    if expires_at and expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=401, detail="session expired")
+    user = get_user_by_id(conn, session["user_id"])
+    if not user:
+        raise HTTPException(status_code=401, detail="user not found")
+    touch_session(conn, token)
+    conn.commit()
+    return user
 
 
 def _fetch_book_and_verse(conn, version_id: str, book_name: str, chapter: int, verse: int) -> dict:
@@ -308,6 +384,293 @@ def search(
     return results
 
 
+@app.post("/v1/auth/register", response_model=AuthResponse)
+def register(payload: AuthRegisterRequest, conn=Depends(get_conn)):
+    email = normalize_email(payload.email)
+    if not validate_email(email):
+        raise HTTPException(status_code=400, detail="invalid email")
+    password = payload.password or ""
+    if len(password) < 12:
+        raise HTTPException(status_code=400, detail="password too short")
+    if len(password) > 128:
+        raise HTTPException(status_code=400, detail="password too long")
+    existing = get_user_by_email(conn, email)
+    if existing:
+        raise HTTPException(status_code=409, detail="email already registered")
+    user = create_user(conn, email, payload.password)
+    session = create_session(conn, user["user_id"], payload.device_id)
+    conn.commit()
+    return {
+        "user_id": user["user_id"],
+        "session_token": session["session_token"],
+        "expires_at": session["expires_at"].isoformat(),
+    }
+
+
+@app.post("/v1/auth/login", response_model=AuthResponse)
+def login(payload: AuthLoginRequest, request: Request, conn=Depends(get_conn)):
+    email = normalize_email(payload.email)
+    ip_address = _get_client_ip(request)
+    now = datetime.now(timezone.utc)
+
+    account_attempt = get_login_attempt(conn, "account", email) if email else None
+    ip_attempt = get_login_attempt(conn, "ip", ip_address) if ip_address else None
+    if is_login_blocked(account_attempt, now) or is_login_blocked(ip_attempt, now):
+        retry_after = max(
+            login_retry_after(account_attempt, now),
+            login_retry_after(ip_attempt, now),
+        )
+        raise HTTPException(
+            status_code=429,
+            detail=f"login temporarily blocked, retry after {retry_after}s",
+        )
+
+    if requires_captcha(account_attempt) or requires_captcha(ip_attempt):
+        if not verify_captcha_token(payload.captcha_token):
+            raise HTTPException(status_code=403, detail="captcha required")
+
+    user = get_user_by_email(conn, email)
+    if not user or not verify_password(payload.password or "", user["password_hash"]):
+        if email:
+            record_login_failure(conn, "account", email, now)
+        if ip_address:
+            record_login_failure(conn, "ip", ip_address, now)
+        conn.commit()
+        raise HTTPException(status_code=401, detail="invalid credentials")
+
+    if needs_password_upgrade(user["password_hash"]):
+        update_password_hash(conn, user["user_id"], hash_password(payload.password or ""))
+
+    if email:
+        clear_login_attempt(conn, "account", email)
+    if ip_address:
+        clear_login_attempt(conn, "ip", ip_address)
+
+    session = create_session(conn, user["user_id"], payload.device_id)
+    conn.commit()
+    return {
+        "user_id": user["user_id"],
+        "session_token": session["session_token"],
+        "expires_at": session["expires_at"].isoformat(),
+    }
+
+
+@app.get("/v1/auth/me", response_model=AuthMeResponse)
+def me(current_user=Depends(require_user)):
+    return {
+        "user_id": current_user["user_id"],
+        "email": current_user["email"],
+        "created_at": current_user["created_at"].isoformat(),
+        "last_login": current_user["last_login"].isoformat()
+        if current_user.get("last_login")
+        else None,
+    }
+
+
+@app.post("/v1/auth/logout", response_model=AuthLogoutResponse)
+def logout(request: Request, conn=Depends(get_conn)):
+    token = _get_bearer_token(request)
+    if not token:
+        raise HTTPException(status_code=401, detail="auth required")
+    revoked = revoke_session(conn, token)
+    conn.commit()
+    return {"revoked": revoked}
+
+
+@app.get("/v1/bible/bookmarks", response_model=BookmarkListResponse)
+def list_bookmarks(
+    current_user=Depends(require_user),
+    version_id: str = Query("krv"),
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    conn=Depends(get_conn),
+):
+    user_id = current_user["user_id"]
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT
+                m.user_id,
+                m.version_id,
+                m.book_id,
+                b.ko_name AS book_name,
+                m.chapter,
+                m.verse,
+                m.created_at
+            FROM bible_bookmark m
+            JOIN bible_book b
+              ON b.version_id = m.version_id AND b.book_id = m.book_id
+            WHERE m.user_id = %s AND m.version_id = %s
+            ORDER BY m.created_at DESC
+            LIMIT %s OFFSET %s
+            """,
+            (user_id, version_id, limit, offset),
+        )
+        rows = cur.fetchall()
+    items = [
+        {
+            "version_id": row["version_id"],
+            "book_id": row["book_id"],
+            "book_name": row["book_name"],
+            "chapter": row["chapter"],
+            "verse": row["verse"],
+            "created_at": row["created_at"].isoformat(),
+        }
+        for row in rows
+    ]
+    return {"items": items}
+
+
+@app.post("/v1/bible/bookmarks", response_model=BookmarkCreateResponse)
+def create_bookmark(payload: BookmarkRequest, current_user=Depends(require_user), conn=Depends(get_conn)):
+    user_id = current_user["user_id"]
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO bible_bookmark (device_id, user_id, version_id, book_id, chapter, verse)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (device_id, version_id, book_id, chapter, verse)
+            DO NOTHING
+            """,
+            (
+                user_id,
+                user_id,
+                payload.version_id,
+                payload.book_id,
+                payload.chapter,
+                payload.verse,
+            ),
+        )
+        created = cur.rowcount > 0
+    conn.commit()
+    return {"created": created}
+
+
+@app.delete("/v1/bible/bookmarks", response_model=BookmarkDeleteResponse)
+def delete_bookmark(
+    current_user=Depends(require_user),
+    version_id: str = Query("krv"),
+    book_id: int = Query(...),
+    chapter: int = Query(...),
+    verse: int = Query(...),
+    conn=Depends(get_conn),
+):
+    user_id = current_user["user_id"]
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            DELETE FROM bible_bookmark
+            WHERE user_id = %s AND version_id = %s
+              AND book_id = %s AND chapter = %s AND verse = %s
+            """,
+            (user_id, version_id, book_id, chapter, verse),
+        )
+        deleted = cur.rowcount > 0
+    conn.commit()
+    return {"deleted": deleted}
+
+
+@app.get("/v1/bible/memos", response_model=MemoListResponse)
+def list_memos(
+    current_user=Depends(require_user),
+    version_id: str = Query("krv"),
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    conn=Depends(get_conn),
+):
+    user_id = current_user["user_id"]
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT
+                m.user_id,
+                m.version_id,
+                m.book_id,
+                b.ko_name AS book_name,
+                m.chapter,
+                m.verse,
+                m.memo_text,
+                m.created_at,
+                m.updated_at
+            FROM bible_memo m
+            JOIN bible_book b
+              ON b.version_id = m.version_id AND b.book_id = m.book_id
+            WHERE m.user_id = %s AND m.version_id = %s
+            ORDER BY m.updated_at DESC
+            LIMIT %s OFFSET %s
+            """,
+            (user_id, version_id, limit, offset),
+        )
+        rows = cur.fetchall()
+    items = [
+        {
+            "version_id": row["version_id"],
+            "book_id": row["book_id"],
+            "book_name": row["book_name"],
+            "chapter": row["chapter"],
+            "verse": row["verse"],
+            "memo_text": row["memo_text"],
+            "created_at": row["created_at"].isoformat(),
+            "updated_at": row["updated_at"].isoformat(),
+        }
+        for row in rows
+    ]
+    return {"items": items}
+
+
+@app.post("/v1/bible/memos", response_model=MemoUpsertResponse)
+def upsert_memo(payload: MemoRequest, current_user=Depends(require_user), conn=Depends(get_conn)):
+    user_id = current_user["user_id"]
+    memo_text = (payload.memo_text or "").strip()
+    if not memo_text:
+        raise HTTPException(status_code=400, detail="memo_text required")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO bible_memo
+              (device_id, user_id, version_id, book_id, chapter, verse, memo_text)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (device_id, version_id, book_id, chapter, verse)
+            DO UPDATE SET memo_text = EXCLUDED.memo_text, updated_at = now()
+            """,
+            (
+                user_id,
+                user_id,
+                payload.version_id,
+                payload.book_id,
+                payload.chapter,
+                payload.verse,
+                memo_text,
+            ),
+        )
+    conn.commit()
+    return {"saved": True}
+
+
+@app.delete("/v1/bible/memos", response_model=MemoDeleteResponse)
+def delete_memo(
+    current_user=Depends(require_user),
+    version_id: str = Query("krv"),
+    book_id: int = Query(...),
+    chapter: int = Query(...),
+    verse: int = Query(...),
+    conn=Depends(get_conn),
+):
+    user_id = current_user["user_id"]
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            DELETE FROM bible_memo
+            WHERE user_id = %s AND version_id = %s
+              AND book_id = %s AND chapter = %s AND verse = %s
+            """,
+            (user_id, version_id, book_id, chapter, verse),
+        )
+        deleted = cur.rowcount > 0
+    conn.commit()
+    return {"deleted": deleted}
+
+
 @app.post("/v1/chat/conversations", response_model=ChatCreateResponse)
 def create_conversation(payload: ChatCreateRequest, conn=Depends(get_conn)):
     effective_version_id = select_version_id(payload.locale)
@@ -366,8 +729,8 @@ def post_message(conversation_id: str, payload: ChatMessageRequest, conn=Depends
     if not record:
         raise HTTPException(status_code=404, detail="conversation not found")
 
-    citation_version_id = select_version_id(record.get("locale"))
     sanitized_message = _mask_pii(payload.user_message)
+    citation_version_id = select_citation_version_id(record.get("locale"), sanitized_message)
     store.add_message(conversation_id, "user", sanitized_message, conn=conn)
     log_chat_event(
         "chat_message",
@@ -425,6 +788,46 @@ def post_message(conversation_id: str, payload: ChatMessageRequest, conn=Depends
         citations = _verify_citations(conn, citations)
         assistant_message = append_citations_to_response("", citations)
         assistant_message, citations = enforce_exact_citations(assistant_message, citations)
+        turn_index = len(record["messages"])
+        log_chat_event(
+            "citation_attempt",
+            {
+                "conversation_id": conversation_id,
+                "turn_index": turn_index,
+                "need_verse": True,
+                "source": "direct_reference",
+                "trigger_reason": ["direct_reference"],
+                "exclude_reason": [],
+                "topics": [],
+                "user_goal": "",
+            },
+        )
+        if citations:
+            log_chat_event(
+                "citation_selected",
+                {
+                    "conversation_id": conversation_id,
+                    "turn_index": turn_index,
+                    "selected": [
+                        {
+                            "book_id": c["book_id"],
+                            "chapter": c["chapter"],
+                            "verse_start": c["verse_start"],
+                            "verse_end": c["verse_end"],
+                        }
+                        for c in citations
+                    ],
+                },
+            )
+        else:
+            log_chat_event(
+                "citation_failure",
+                {
+                    "conversation_id": conversation_id,
+                    "turn_index": turn_index,
+                    "reason": "direct_reference_not_found",
+                },
+            )
         store.add_message(conversation_id, "assistant", assistant_message, conn=conn)
         log_chat_event(
             "chat_response",
@@ -449,6 +852,8 @@ def post_message(conversation_id: str, payload: ChatMessageRequest, conn=Depends
                     "risk_flags": [],
                     "llm_ok": False,
                     "source": "direct_reference",
+                    "trigger_reason": ["direct_reference"],
+                    "exclude_reason": [],
                 },
                 "direct_reference": True,
             },
@@ -480,19 +885,11 @@ def post_message(conversation_id: str, payload: ChatMessageRequest, conn=Depends
                     "risk_flags": risk_flags,
                     "llm_ok": False,
                     "source": "crisis",
+                    "trigger_reason": [],
+                    "exclude_reason": [],
                 },
             },
         }
-
-    assistant_turns = sum(
-        1 for m in record.get("messages", []) if m.get("role") == "assistant"
-    )
-    force_citation = (assistant_turns + 1) % 5 == 0
-
-    gating = gate_need_verse(sanitized_message)
-    if force_citation:
-        gating["need_verse"] = True
-        gating["source"] = "periodic"
 
     if len(record["messages"]) >= SUMMARY_TRIGGER_TURNS:
         summary = summarize_messages(record["messages"], record.get("summary", ""))
@@ -501,18 +898,74 @@ def post_message(conversation_id: str, payload: ChatMessageRequest, conn=Depends
         summary = record.get("summary", "")
 
     recent_messages = record["messages"][-RECENT_TURNS:]
+    gating = gate_need_verse(sanitized_message, summary, recent_messages)
     assistant_message, llm_ok = build_assistant_message(
         sanitized_message, gating, summary, recent_messages
     )
     gating["llm_ok"] = llm_ok
-    if not llm_ok and not force_citation:
+    if not llm_ok:
         gating["need_verse"] = False
         gating["source"] = "degraded"
     citations = []
     if gating.get("need_verse"):
-        citations = retrieve_citations(conn, citation_version_id, sanitized_message)
+        turn_index = len(record["messages"])
+        log_chat_event(
+            "citation_attempt",
+            {
+                "conversation_id": conversation_id,
+                "turn_index": turn_index,
+                "need_verse": gating.get("need_verse", False),
+                "source": gating.get("source", ""),
+                "trigger_reason": gating.get("trigger_reason", []),
+                "exclude_reason": gating.get("exclude_reason", []),
+                "topics": gating.get("topics", []),
+                "user_goal": gating.get("user_goal", ""),
+            },
+        )
+        citations, retrieval_meta = retrieve_citations(
+            conn,
+            citation_version_id,
+            sanitized_message,
+            summary=summary,
+            recent_messages=recent_messages,
+        )
+        log_chat_event(
+            "retrieval_candidates",
+            {
+                "conversation_id": conversation_id,
+                "turn_index": turn_index,
+                **retrieval_meta,
+            },
+        )
         assistant_message = append_citations_to_response(assistant_message, citations)
     citations = _verify_citations(conn, citations)
+    if gating.get("need_verse"):
+        if citations:
+            log_chat_event(
+                "citation_selected",
+                {
+                    "conversation_id": conversation_id,
+                    "turn_index": turn_index,
+                    "selected": [
+                        {
+                            "book_id": c["book_id"],
+                            "chapter": c["chapter"],
+                            "verse_start": c["verse_start"],
+                            "verse_end": c["verse_end"],
+                        }
+                        for c in citations
+                    ],
+                },
+            )
+        else:
+            log_chat_event(
+                "citation_failure",
+                {
+                    "conversation_id": conversation_id,
+                    "turn_index": turn_index,
+                    "reason": retrieval_meta.get("failure_reason") or "verification_failed",
+                },
+            )
     assistant_message, citations = enforce_exact_citations(assistant_message, citations)
     store.add_message(conversation_id, "assistant", assistant_message, conn=conn)
     log_chat_event(

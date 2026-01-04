@@ -13,6 +13,34 @@ FastAPI가 `/openapi.json` 및 `/docs`를 자동 제공하므로 실행 후 확�
 - GET `/v1/bible/{version_id}/search?q=...&limit=...&offset=...`
   - 설명: FTS + 부분일치 검색
 
+## Bookmark/Memo API
+
+- GET `/v1/bible/bookmarks?version_id=...`
+  - 설명: 북마크 목록 조회(로그인 필요)
+- POST `/v1/bible/bookmarks`
+  - 설명: 북마크 생성(중복 시 무시, 로그인 필요)
+- DELETE `/v1/bible/bookmarks?version_id=...&book_id=...&chapter=...&verse=...`
+  - 설명: 북마크 삭제
+- GET `/v1/bible/memos?version_id=...`
+  - 설명: 메모 목록 조회(로그인 필요)
+- POST `/v1/bible/memos`
+  - 설명: 메모 생성/수정(업서트, 로그인 필요)
+- DELETE `/v1/bible/memos?version_id=...&book_id=...&chapter=...&verse=...`
+  - 설명: 메모 삭제
+
+## Auth API
+
+- POST `/v1/auth/register`
+  - 설명: 회원가입 및 세션 발급
+- POST `/v1/auth/login`
+  - 설명: 로그인 및 세션 발급 (실패 누적 시 지연/추가 인증)
+  - 요청 필드: `captcha_token` (선택, 10회 실패 이후 필요)
+  - 정책: 5회 실패 시 30초 차단, 10회 실패 시 추가 인증 요구
+- GET `/v1/auth/me`
+  - 설명: 현재 사용자 조회
+- POST `/v1/auth/logout`
+  - 설명: 세션 해제
+
 ## Chat API
 
 - POST `/v1/chat/conversations`

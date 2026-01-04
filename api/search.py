@@ -6,6 +6,10 @@ from etl.utils import normalize_text
 TRGM_SIMILARITY_THRESHOLD = 0.3
 
 
+def _vector_literal(values: List[float]) -> str:
+    return "[" + ",".join(f"{v:.6f}" for v in values) + "]"
+
+
 def search_verses(conn, version_id: str, query: str, limit: int, offset: int) -> Dict[str, List[dict]]:
     normalized_query = normalize_text(query or "")
     if not normalized_query:
@@ -87,8 +91,82 @@ def search_verses(conn, version_id: str, query: str, limit: int, offset: int) ->
             "verse": row["verse"],
             "snippet": row["snippet"] or row["text"],
             "text": row["text"],
+            "rank": row["rank"],
+            "trgm_sim": row["trgm_sim"],
         }
         for row in rows
     ]
 
     return {"total": total, "items": items}
+
+
+def search_verses_vector(
+    conn,
+    version_id: str,
+    embedding: List[float],
+    limit: int,
+    window_size: int,
+) -> List[dict]:
+    if not embedding:
+        return []
+    vector = _vector_literal(embedding)
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                    v.book_id,
+                    b.ko_name AS book_name,
+                    v.chapter,
+                    v.verse,
+                    v.text,
+                    w.distance
+                FROM (
+                    SELECT
+                        book_id,
+                        chapter,
+                        verse_start,
+                        verse_end,
+                        embedding <-> %s::vector AS distance
+                    FROM bible_verse_window
+                    WHERE version_id = %s
+                      AND (verse_end - verse_start + 1) = %s
+                      AND embedding IS NOT NULL
+                    ORDER BY embedding <-> %s::vector
+                    LIMIT %s
+                ) AS w
+                JOIN bible_verse v
+                  ON v.version_id = %s
+                 AND v.book_id = w.book_id
+                 AND v.chapter = w.chapter
+                 AND v.verse BETWEEN w.verse_start AND w.verse_end
+                JOIN bible_book b
+                  ON b.version_id = v.version_id
+                 AND b.book_id = v.book_id
+                ORDER BY w.distance ASC, v.verse ASC
+                """,
+                (
+                    vector,
+                    version_id,
+                    window_size,
+                    vector,
+                    limit,
+                    version_id,
+                ),
+            )
+            rows = cur.fetchall()
+    except Exception:
+        return []
+
+    return [
+        {
+            "book_id": row["book_id"],
+            "book_name": row["book_name"],
+            "chapter": row["chapter"],
+            "verse": row["verse"],
+            "text": row["text"],
+            "vector_distance": row["distance"],
+            "source": "vector",
+        }
+        for row in rows
+    ]

@@ -44,7 +44,7 @@ class FakeConn:
         return self._cursor
 
 
-def test_force_citation_on_fifth_turn(monkeypatch):
+def test_no_forced_citation_without_triggers(monkeypatch):
     record = store.create(device_id="test", locale="ko-KR", version_id="krv", store_messages=False)
     conversation_id = record["conversation_id"]
 
@@ -55,13 +55,15 @@ def test_force_citation_on_fifth_turn(monkeypatch):
     monkeypatch.setattr(
         main_mod,
         "gate_need_verse",
-        lambda _msg: {
+        lambda _msg, _summary, _recent: {
             "need_verse": False,
             "topics": [],
             "user_goal": "",
             "risk_flags": [],
             "llm_ok": True,
             "source": "test",
+            "trigger_reason": [],
+            "exclude_reason": [],
         },
     )
     monkeypatch.setattr(main_mod, "build_assistant_message", lambda *_args, **_kw: ("테스트 응답", True))
@@ -71,6 +73,8 @@ def test_force_citation_on_fifth_turn(monkeypatch):
         "search_verses",
         lambda _conn, _version_id, _query, _limit, _offset: {"total": 0, "items": []},
     )
+    monkeypatch.setattr(chat_mod, "VECTOR_ENABLED", False)
+    monkeypatch.setattr(chat_mod, "RERANK_MODE", "off")
 
     data_by_key = {
         (19, 23, 1): {
@@ -93,6 +97,5 @@ def test_force_citation_on_fifth_turn(monkeypatch):
     payload = ChatMessageRequest(user_message="테스트입니다", client_context=None)
     response = main_mod.post_message(conversation_id, payload, conn=conn)
 
-    assert response["memory"]["gating"]["need_verse"] is True
-    assert response["citations"]
-    assert "시편" in response["assistant_message"] or "마태복음" in response["assistant_message"]
+    assert response["memory"]["gating"]["need_verse"] is False
+    assert response["citations"] == []
