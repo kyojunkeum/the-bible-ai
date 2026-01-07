@@ -59,12 +59,13 @@ Web / Mobile은 UI 전용
 
 모든 판단·검색·AI 제어는 FastAPI 서버에서만 수행
 
-구분	역할
-Web / App	입력·표시(UI)
-API Server	검색·인용·상담·AI 판단
-DB	성경 정본 및 메타
-Ollama	LLM / Embedding
-4. 크롤링 최소화 · 재현성 보장
+| 구분         | 역할              |
+| ---------- | --------------- |
+| Web / App  | 입력·표시(UI)       |
+| API Server | 검색·인용·상담·AI 판단  |
+| DB         | 성경 정본 및 메타      |
+| Ollama     | LLM / Embedding |
+
 
 장(Chapter) 단위 수집
 
@@ -77,26 +78,29 @@ Ollama	LLM / Embedding
 중단 후 재실행 가능
 
 ## 📁 디렉토리 구조
+
+```text
 TheBibleAI/
-├─ api/                  # FastAPI 서버 (검색 / 상담 / 인용)
+├─ api/                  # FastAPI 서버
 ├─ db/                   # DB 스키마 및 Seed
 │  ├─ 00_extensions.sql
 │  ├─ 10_schema.sql
 │  ├─ 20_indexes.sql
 │  ├─ 40_seed_version.sql
 │  └─ 41_seed_books.sql
-├─ etl/                  # 본문 수집/정규화/적재 파이프라인
+├─ etl/                  # ETL 파이프라인
 │  ├─ config.py
 │  ├─ utils.py
 │  ├─ db.py
 │  ├─ crawler.py
 │  └─ run_etl.py
 ├─ docs/
-│  └─ DETAILED_DESIGN.md  # 상세 설계 명세서
-├─ web/                  # Web UI (React + Vite)
-├─ mobile/               # Mobile UI (React Native + Expo)
+│  └─ DETAILED_DESIGN.md
+├─ web/
+├─ mobile/
 ├─ requirements.txt
 └─ README.md
+```
 
 
 ## 데이터베이스 개요
