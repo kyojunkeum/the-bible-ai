@@ -98,6 +98,7 @@ TheBibleAI/
 ├─ requirements.txt
 └─ README.md
 
+
 ## 데이터베이스 개요
 주요 테이블
 
