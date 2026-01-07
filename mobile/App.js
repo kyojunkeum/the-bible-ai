@@ -18,7 +18,7 @@ const API_BASE = process.env.EXPO_PUBLIC_API_BASE || "http://localhost:9000";
 const DEVICE_ID = "mobile";
 const VERSION_OPTIONS = [
   { id: "krv", labelKo: "개역한글판", labelEn: "Korean (KRV)" },
-  { id: "eng-web", labelKo: "WEB", labelEn: "WEB (English)" }
+  { id: "eng-web", labelKo: "WEB", labelEn: "English (WEB)" }
 ];
 const EN_BOOK_NAME_BY_OSIS = {
   GEN: "Genesis",

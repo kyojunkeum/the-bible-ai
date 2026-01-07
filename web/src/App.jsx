@@ -5,7 +5,7 @@ const TABS = ["Reader", "Search", "Chat", "Account"];
 const DEVICE_ID = "web";
 const VERSION_OPTIONS = [
   { id: "krv", labelKo: "개역한글판", labelEn: "Korean (KRV)" },
-  { id: "eng-web", labelKo: "WEB", labelEn: "WEB (English)" }
+  { id: "eng-web", labelKo: "WEB", labelEn: "English (WEB)" }
 ];
 const EN_BOOK_NAME_BY_OSIS = {
   GEN: "Genesis",

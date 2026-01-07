@@ -1,4 +1,4 @@
-# 말씀동행 상세 설계 명세서 (Detailed Design Specification)
+# 평안AI 상세 설계 명세서 (Detailed Design Specification)
 
 ## 0. 설계 원칙 요약
 

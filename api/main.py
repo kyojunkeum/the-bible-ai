@@ -992,26 +992,6 @@ def post_message(conversation_id: str, payload: ChatMessageRequest, conn=Depends
     }
 
 
-@app.get("/v1/chat/conversations/{conversation_id}", response_model=ChatConversationResponse)
-def get_conversation(conversation_id: str, conn=Depends(get_conn)):
-    record = store.get(conversation_id, conn=conn)
-    if not record:
-        raise HTTPException(status_code=404, detail="conversation not found")
-    return {
-        "conversation_id": record["conversation_id"],
-        "created_at": record["created_at"],
-        "messages": record["messages"],
-    }
-
-
-@app.delete("/v1/chat/conversations/{conversation_id}")
-def delete_conversation(conversation_id: str, conn=Depends(get_conn)):
-    deleted = store.delete(conversation_id, conn=conn)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="conversation not found")
-    return {"ok": True}
-
-
 if __name__ == "__main__":
     import uvicorn
 
