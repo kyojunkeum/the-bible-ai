@@ -100,18 +100,40 @@ const STORAGE_KEYS = {
   tab: "bible:last_tab",
   authToken: "bible:auth_token",
   authUser: "bible:auth_user",
-  authEmail: "bible:auth_email"
+  authEmail: "bible:auth_email",
+  uiLang: "bible:ui_lang"
 };
+
+// ✅ 추가: UI 언어 옵션
+const UI_LANGUAGE_OPTIONS = [
+  { id: "ko", labelKo: "한국어", labelEn: "Korean" },
+  { id: "en", labelKo: "영어", labelEn: "English" }
+];
+
+const normalizeUiLang = (lang) => {
+  if (!lang) return "ko";
+  const v = String(lang).toLowerCase();
+  if (v.startsWith("en")) return "en";
+  if (v.startsWith("ko")) return "ko";
+  return "ko";
+};
+
 
 const makeVerseKey = (bookId, chapter, verse) => `${bookId}:${chapter}:${verse}`;
 
-const getBookDisplayName = (book, versionId) => {
+const getBookDisplayName = (book, uiLang) => {
   if (!book) return "";
-  if (versionId !== "eng-web") {
+  const isEnUi = uiLang === "en";
+
+  // 서버가 ko_name을 주고 있으니, 한국어 UI면 우선 ko_name 사용
+  if (!isEnUi) {
     return book.ko_name || book.abbr || book.osis_code || "";
   }
+
+  // 영어 UI면 OSIS → 영어명 매핑 우선
   return (
     EN_BOOK_NAME_BY_OSIS[book.osis_code] ||
+    book.en_name || // (서버가 향후 제공하면 사용)
     book.ko_name ||
     book.abbr ||
     book.osis_code ||
@@ -131,9 +153,17 @@ const getDeviceLocale = () => {
 };
 
 export default function App() {
+
   const [activeTab, setActiveTab] = useState("Reader");
   const [versionId, setVersionId] = useState("krv");
+
+  const [uiLang, setUiLang] = useState("ko");
+  const [uiLangModalOpen, setUiLangModalOpen] = useState(false);
+
+  const isEnglishVersion = versionId === "eng-web";
+
   const deviceLocale = useMemo(() => getDeviceLocale(), []);
+
   const [books, setBooks] = useState([]);
   const [booksError, setBooksError] = useState("");
   const [booksLoading, setBooksLoading] = useState(false);
@@ -188,23 +218,24 @@ export default function App() {
   const chapterCache = useRef(new Map());
   const cacheOrder = useRef([]);
 
-  const isEnglishVersion = versionId === "eng-web";
-  const t = (en, ko) => (isEnglishVersion ? en : ko);
+  const isEnglishUI = uiLang === "en";
+  const t = (en, ko) => (isEnglishUI ? en : ko);
+
   const versionOptions = useMemo(
     () =>
       VERSION_OPTIONS.map((item) => ({
         ...item,
-        label: isEnglishVersion ? item.labelEn : item.labelKo
+        label: isEnglishUI ? item.labelEn : item.labelKo
       })),
-    [isEnglishVersion]
+    [isEnglishUI]
   );
   const tabOptions = useMemo(
     () =>
       TABS.map((tab) => ({
         ...tab,
-        label: isEnglishVersion ? tab.labelEn : tab.labelKo
+        label: isEnglishUI ? tab.labelEn : tab.labelKo
       })),
-    [isEnglishVersion]
+    [isEnglishUI]
   );
   const selectedVersion = useMemo(() => {
     return versionOptions.find((item) => item.id === versionId) || {
@@ -241,8 +272,8 @@ export default function App() {
     [books, selectedBookId]
   );
   const selectedBookName = useMemo(
-    () => getBookDisplayName(selectedBook, versionId),
-    [selectedBook, versionId]
+    () => getBookDisplayName(selectedBook, uiLang),
+    [selectedBook, uiLang]
   );
   const booksById = useMemo(
     () => new Map(books.map((book) => [book.book_id, book])),
@@ -250,7 +281,7 @@ export default function App() {
   );
   const getResultBookName = (item) => {
     const book = booksById.get(item.book_id);
-    return getBookDisplayName(book, versionId) || item.book_name;
+    return getBookDisplayName(book, uiLang) || item.book_name;
   };
   const bookmarksByKey = useMemo(
     () => new Set(bookmarks.map((item) => makeVerseKey(item.book_id, item.chapter, item.verse))),
@@ -291,6 +322,17 @@ export default function App() {
         if (userId) setAuthUserId(userId);
         const email = await AsyncStorage.getItem(STORAGE_KEYS.authEmail);
         if (email) setAuthEmail(email);
+
+        // ✅ (D 추가) UI 언어 복원
+        const savedUiLang = await AsyncStorage.getItem(STORAGE_KEYS.uiLang);
+        if (savedUiLang) {
+          setUiLang(normalizeUiLang(savedUiLang));
+        } else {
+          // 최초 실행이면 기기 로케일 기반
+          setUiLang(normalizeUiLang(savedUiLang ?? deviceLocale));
+        }
+
+
       } catch (_) {
         // Ignore storage restore failures
       } finally {
@@ -301,11 +343,15 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [deviceLocale]);
 
   useEffect(() => {
     AsyncStorage.setItem(STORAGE_KEYS.tab, activeTab).catch(() => {});
   }, [activeTab]);
+
+  useEffect(() => {
+  AsyncStorage.setItem(STORAGE_KEYS.uiLang, uiLang).catch(() => {});
+}, [uiLang]);
 
   useEffect(() => {
     if (authToken) {
@@ -328,6 +374,11 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     const loadBooks = async () => {
+      // ✅ 버전 전환 시 이전 상태 제거(레이스 방지)
+      setBooks([]);
+      setChapterData(null);
+      setChapterError("");
+      setChapterNotice("");
       setBooksError("");
       setBooksLoading(true);
       try {
@@ -356,6 +407,19 @@ export default function App() {
       cancelled = true;
     };
   }, [versionId]);
+
+  // ✅ 버전이 바뀌면 Reader 탭에서 자동으로 본문 로딩
+  useEffect(() => {
+    if (!restoreDone) return;
+    if (!initialLoadDone) return;
+    if (activeTab !== "Reader") return;
+    if (!books.length) return;
+    if (!selectedBookId || !chapter) return;
+
+    // versionId가 바뀐 시점에 현재 선택(book/chapter) 기준으로 새 버전 본문 로드
+    loadChapter();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [versionId, restoreDone, activeTab, books.length, selectedBookId, chapter]);
 
   useEffect(() => {
     if (activeTab !== "Reader") return;
@@ -443,6 +507,14 @@ export default function App() {
     }
   };
 
+  // ✅ 버전이 바뀌면 채팅 세션/대화 초기화 (새 세션 유도)
+  useEffect(() => {
+    setConversationId("");
+    setChatMessages([]);
+    setChatError("");
+    setChatInput("");
+  }, [versionId]);
+
   const loadChapter = async (override) => {
     setChapterError("");
     setChapterNotice("");
@@ -469,6 +541,12 @@ export default function App() {
     }
     const cacheKey = `${versionId}:${targetBookId}:${boundedChapter}`;
     const cached = getCachedChapter(cacheKey);
+    // ✅ 캐시가 있으면 즉시 렌더링 (빠른 표시)
+    if (cached?.verses?.length) {
+      setChapterData(cached);
+      setChapterError(""); // 오프라인 문구가 남아있지 않게
+      setChapterNotice(t("Showing cached content; checking for updates...", "캐시로 먼저 표시하고 최신 본문을 확인 중입니다."));
+    }
     try {
       const res = await fetch(
         `${API_BASE}/v1/bible/${versionId}/books/${targetBookId}/chapters/${boundedChapter}`
@@ -479,6 +557,9 @@ export default function App() {
         setChapterNotice(
           t("Content updated; cache refreshed.", "본문이 업데이트되어 캐시를 갱신했습니다.")
         );
+      } else if (cached) {
+      // 캐시가 있었는데 동일하면 "확인 완료" 정도로 정리 가능(원하면 제거해도 됨)
+      setChapterNotice("");
       }
       setCachedChapter(cacheKey, data);
       setChapterData(data);
@@ -1190,12 +1271,27 @@ export default function App() {
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>{t("Settings", "설정")}</Text>
                 <View style={styles.card}>
+                  <Text style={styles.label}>{t("UI language", "표시 언어")}</Text>
+
+                  <TouchableOpacity
+                    style={styles.bookSelect}
+                    onPress={() => setUiLangModalOpen(true)}
+                  >
+                    <Text style={styles.bookSelectLabel}>{t("Select language", "언어 선택")}</Text>
+                    <Text style={styles.bookSelectValue}>
+                      {uiLang === "en" ? "English" : "한국어"}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.card}>
                   <Text style={styles.label}>{t("API address", "API 주소")}</Text>
                   <Text style={styles.settingValue}>{API_BASE}</Text>
                   {conversationId ? (
                     <Text style={styles.meta}>Session: {conversationId}</Text>
                   ) : null}
                 </View>
+
                 <View style={styles.card}>
                   <Text style={styles.label}>{t("Account", "계정")}</Text>
                   {authToken ? (
@@ -1211,6 +1307,7 @@ export default function App() {
                       </TouchableOpacity>
                     </View>
                   ) : (
+
                     <View style={styles.accountForm}>
                       <TextInput
                         style={styles.input}
@@ -1266,6 +1363,50 @@ export default function App() {
               </View>
             )}
             <Modal
+              visible={uiLangModalOpen}
+              animationType="slide"
+              transparent
+              onRequestClose={() => setUiLangModalOpen(false)}
+            >
+              <View style={styles.modalBackdrop}>
+                <View style={styles.modalCard}>
+                  <Text style={styles.modalTitle}>{t("UI language", "표시 언어")}</Text>
+
+                  <ScrollView style={styles.modalList}>
+                    {UI_LANGUAGE_OPTIONS.map((opt) => (
+                      <TouchableOpacity
+                        key={opt.id}
+                        style={[
+                          styles.bookOption,
+                          uiLang === opt.id && styles.bookOptionActive
+                        ]}
+                        onPress={() => {
+                          setUiLang(opt.id);          // ✅ 언어 변경
+                          setUiLangModalOpen(false);  // ✅ 모달 닫기
+                        }}
+                      >
+                        <Text
+                          style={[
+                            styles.bookOptionText,
+                            uiLang === opt.id && styles.bookOptionTextActive
+                          ]}
+                        >
+                          {isEnglishUI ? opt.labelEn : opt.labelKo}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+
+                  <TouchableOpacity
+                    style={styles.modalClose}
+                    onPress={() => setUiLangModalOpen(false)}
+                  >
+                    <Text style={styles.modalCloseText}>{t("Close", "닫기")}</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </Modal>
+            <Modal
               visible={bookModalOpen}
               animationType="slide"
               transparent
@@ -1293,7 +1434,7 @@ export default function App() {
                             selectedBookId === book.book_id && styles.bookOptionTextActive
                           ]}
                         >
-                          {getBookDisplayName(book, versionId)} ({isEnglishVersion ? book.osis_code : book.abbr})
+                          {getBookDisplayName(book, uiLang)} ({isEnglishVersion ? book.osis_code : book.abbr})
                         </Text>
                       </TouchableOpacity>
                     ))}
