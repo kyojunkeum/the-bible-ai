@@ -2,6 +2,7 @@
   "expo": {
     "name": "평안",
     "slug": "thebibleai",
+    "scheme": "thebibleai",
     "version": "0.1.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",

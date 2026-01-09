@@ -1,9 +1,11 @@
 import os
 import time
+import secrets
 from datetime import datetime, timezone
 from typing import Optional
 
 import psycopg2
+import requests
 from psycopg2.extras import RealDictCursor
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -37,10 +39,18 @@ from api.models import (
     MemoDeleteResponse,
     RefResponse,
     SearchResponse,
+    UserSettingsResponse,
+    UserSettingsUpdateRequest,
+    OAuthStartRequest,
+    OAuthStartResponse,
+    OAuthExchangeRequest,
+    TokenResponse,
+    RefreshRequest,
 )
 from api.auth import (
     create_session,
     create_user,
+    create_user_oauth,
     clear_login_attempt,
     get_session,
     get_login_attempt,
@@ -56,9 +66,25 @@ from api.auth import (
     revoke_session,
     touch_session,
     update_password_hash,
+    update_last_login,
     validate_email,
     verify_captcha_token,
     verify_password,
+)
+from api.jwt_utils import (
+    create_access_token,
+    create_refresh_token,
+    verify_access_token,
+    verify_refresh_token,
+)
+from api.oauth_accounts import get_oauth_account, upsert_oauth_account
+from api.oauth_google import build_google_auth_url, exchange_code_for_tokens, fetch_google_userinfo
+from api.oauth_state import consume_oauth_state, store_oauth_state
+from api.refresh_tokens import (
+    get_refresh_token,
+    is_refresh_token_active,
+    revoke_refresh_token,
+    store_refresh_token,
 )
 from api.chat import (
     append_citations_to_response,
@@ -79,8 +105,19 @@ from api.chat import (
     SUMMARY_TRIGGER_TURNS,
     RECENT_TURNS,
 )
+from api.chat_meta import (
+    ANON_DAILY_TURN_LIMIT,
+    ANON_CHAT_TURN_LIMIT,
+    build_anonymous_meta_ttl,
+    enforce_anonymous_daily_limit,
+    get_anonymous_daily_usage,
+    enforce_turn_and_increment,
+    get_conversation_meta,
+    init_conversation_meta,
+)
 from api.ref_parser import extract_reference, parse_reference
 from api.search import search_verses
+from api.user_settings import ensure_user_settings, get_user_settings, update_user_settings
 
 app = FastAPI(title=API_TITLE, version=API_VERSION)
 
@@ -152,10 +189,101 @@ def _get_client_ip(request: Request) -> str:
     return "unknown"
 
 
+def _get_user_from_jwt(token: str, conn) -> dict | None:
+    payload = verify_access_token(token)
+    if not payload:
+        return None
+    user_id = payload.get("sub")
+    if not user_id:
+        return None
+    user = get_user_by_id(conn, user_id)
+    if not user:
+        return None
+    return user
+
+
+def _remaining_turns(turn_limit: int | None, turn_count: int | None) -> int | None:
+    if not turn_limit:
+        return None
+    return max(int(turn_limit) - int(turn_count or 0), 0)
+
+
+def _meta_payload(meta: dict | None, turn_info: dict | None = None) -> dict:
+    if not meta:
+        return {
+            "store_messages": None,
+            "expires_at": None,
+            "turn_limit": None,
+            "turn_count": None,
+            "remaining_turns": None,
+            "daily_turn_limit": None,
+            "daily_turn_count": None,
+            "daily_remaining": None,
+        }
+    turn_limit = meta.get("turn_limit") or 0
+    turn_count = meta.get("turn_count") or 0
+    if turn_info and turn_info.get("status") == "ok":
+        turn_limit = turn_info.get("turn_limit") or turn_limit
+        turn_count = turn_info.get("turn_count") or turn_count
+    return {
+        "store_messages": meta.get("store_messages"),
+        "expires_at": meta.get("expires_at"),
+        "turn_limit": int(turn_limit) if turn_limit is not None else None,
+        "turn_count": int(turn_count) if turn_count is not None else None,
+        "remaining_turns": _remaining_turns(turn_limit, turn_count),
+        "daily_turn_limit": None,
+        "daily_turn_count": None,
+        "daily_remaining": None,
+    }
+
+
+def _daily_payload(daily_info: dict | None) -> dict:
+    if not daily_info:
+        return {
+            "daily_turn_limit": None,
+            "daily_turn_count": None,
+            "daily_remaining": None,
+        }
+    limit = int(daily_info.get("limit") or 0)
+    count = int(daily_info.get("count") or 0)
+    remaining = daily_info.get("remaining")
+    if remaining is None and limit:
+        remaining = max(limit - count, 0)
+    return {
+        "daily_turn_limit": limit or None,
+        "daily_turn_count": count or 0,
+        "daily_remaining": remaining if remaining is not None else None,
+    }
+
+
 def require_user(request: Request, conn=Depends(get_conn)) -> dict:
     token = _get_bearer_token(request)
     if not token:
         raise HTTPException(status_code=401, detail="auth required")
+    user = _get_user_from_jwt(token, conn)
+    if user:
+        return user
+    session = get_session(conn, token)
+    if not session:
+        raise HTTPException(status_code=401, detail="invalid session")
+    expires_at = session.get("expires_at")
+    if expires_at and expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=401, detail="session expired")
+    user = get_user_by_id(conn, session["user_id"])
+    if not user:
+        raise HTTPException(status_code=401, detail="user not found")
+    touch_session(conn, token)
+    conn.commit()
+    return user
+
+
+def get_optional_user(request: Request, conn=Depends(get_conn)) -> dict | None:
+    token = _get_bearer_token(request)
+    if not token:
+        return None
+    user = _get_user_from_jwt(token, conn)
+    if user:
+        return user
     session = get_session(conn, token)
     if not session:
         raise HTTPException(status_code=401, detail="invalid session")
@@ -384,7 +512,7 @@ def search(
     return results
 
 
-@app.post("/v1/auth/register", response_model=AuthResponse)
+@app.post("/v1/auth/register", response_model=TokenResponse)
 def register(payload: AuthRegisterRequest, conn=Depends(get_conn)):
     email = normalize_email(payload.email)
     if not validate_email(email):
@@ -398,16 +526,23 @@ def register(payload: AuthRegisterRequest, conn=Depends(get_conn)):
     if existing:
         raise HTTPException(status_code=409, detail="email already registered")
     user = create_user(conn, email, payload.password)
-    session = create_session(conn, user["user_id"], payload.device_id)
+    ensure_user_settings(conn, user["user_id"])
+    update_last_login(conn, user["user_id"])
+    access_token, access_exp = create_access_token(user["user_id"], email)
+    refresh_token, refresh_id, refresh_exp = create_refresh_token(user["user_id"], email)
+    store_refresh_token(conn, user["user_id"], refresh_id, refresh_exp, payload.device_id)
     conn.commit()
     return {
         "user_id": user["user_id"],
-        "session_token": session["session_token"],
-        "expires_at": session["expires_at"].isoformat(),
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "expires_in": access_exp - int(datetime.now(timezone.utc).timestamp()),
+        "token_type": "Bearer",
+        "email": email,
     }
 
 
-@app.post("/v1/auth/login", response_model=AuthResponse)
+@app.post("/v1/auth/login", response_model=TokenResponse)
 def login(payload: AuthLoginRequest, request: Request, conn=Depends(get_conn)):
     email = normalize_email(payload.email)
     ip_address = _get_client_ip(request)
@@ -446,12 +581,152 @@ def login(payload: AuthLoginRequest, request: Request, conn=Depends(get_conn)):
     if ip_address:
         clear_login_attempt(conn, "ip", ip_address)
 
-    session = create_session(conn, user["user_id"], payload.device_id)
+    update_last_login(conn, user["user_id"])
+    access_token, access_exp = create_access_token(user["user_id"], user["email"])
+    refresh_token, refresh_id, refresh_exp = create_refresh_token(user["user_id"], user["email"])
+    store_refresh_token(conn, user["user_id"], refresh_id, refresh_exp, payload.device_id)
     conn.commit()
     return {
         "user_id": user["user_id"],
-        "session_token": session["session_token"],
-        "expires_at": session["expires_at"].isoformat(),
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "expires_in": access_exp - int(datetime.now(timezone.utc).timestamp()),
+        "token_type": "Bearer",
+        "email": user.get("email"),
+    }
+
+
+@app.post("/v1/auth/oauth/google/start", response_model=OAuthStartResponse)
+def oauth_google_start(payload: OAuthStartRequest):
+    if not os.getenv("GOOGLE_CLIENT_ID"):
+        raise HTTPException(status_code=503, detail="google oauth not configured")
+    if not payload.redirect_uri or not payload.code_challenge:
+        raise HTTPException(status_code=400, detail="invalid oauth request")
+    state = secrets.token_urlsafe(24)
+    store_oauth_state(
+        state,
+        {
+            "provider": "google",
+            "redirect_uri": payload.redirect_uri,
+            "code_challenge": payload.code_challenge,
+            "code_challenge_method": payload.code_challenge_method or "S256",
+            "device_id": payload.device_id or "",
+        },
+    )
+    auth_url = build_google_auth_url(
+        redirect_uri=payload.redirect_uri,
+        state=state,
+        code_challenge=payload.code_challenge,
+        code_challenge_method=payload.code_challenge_method or "S256",
+    )
+    return {"provider": "google", "auth_url": auth_url, "state": state}
+
+
+def _pkce_verify(code_verifier: str, code_challenge: str, method: str) -> bool:
+    if method.upper() != "S256":
+        return False
+    import base64
+    import hashlib
+
+    digest = hashlib.sha256(code_verifier.encode("utf-8")).digest()
+    encoded = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return encoded == code_challenge
+
+
+@app.post("/v1/auth/oauth/google/exchange", response_model=TokenResponse)
+def oauth_google_exchange(payload: OAuthExchangeRequest, conn=Depends(get_conn)):
+    if not os.getenv("GOOGLE_CLIENT_ID"):
+        raise HTTPException(status_code=503, detail="google oauth not configured")
+    state = consume_oauth_state(payload.state)
+    if not state or state.get("provider") != "google":
+        raise HTTPException(status_code=400, detail="invalid oauth state")
+    if not _pkce_verify(payload.code_verifier, state.get("code_challenge", ""), state.get("code_challenge_method", "S256")):
+        raise HTTPException(status_code=400, detail="invalid code_verifier")
+    redirect_uri = state.get("redirect_uri") or ""
+    try:
+        token_data = exchange_code_for_tokens(payload.code, redirect_uri, payload.code_verifier)
+        access_token = token_data.get("access_token", "")
+        if not access_token:
+            raise HTTPException(status_code=502, detail="google oauth failed")
+        userinfo = fetch_google_userinfo(access_token)
+    except requests.RequestException:
+        raise HTTPException(status_code=502, detail="google oauth failed")
+
+    provider_user_id = userinfo.get("sub")
+    email = userinfo.get("email")
+    email_verified = bool(userinfo.get("email_verified"))
+    if not provider_user_id or not email:
+        raise HTTPException(status_code=400, detail="google profile missing")
+    if not email_verified:
+        raise HTTPException(status_code=403, detail="email not verified")
+
+    account = get_oauth_account(conn, "google", provider_user_id)
+    if account:
+        user_id = account["user_id"]
+    else:
+        existing_user = get_user_by_email(conn, email)
+        if existing_user:
+            user_id = existing_user["user_id"]
+        else:
+            user = create_user_oauth(conn, email)
+            ensure_user_settings(conn, user["user_id"])
+            user_id = user["user_id"]
+
+    upsert_oauth_account(
+        conn,
+        "google",
+        provider_user_id,
+        user_id,
+        email,
+        email_verified,
+        userinfo.get("name"),
+        userinfo.get("picture"),
+    )
+    access_token, access_exp = create_access_token(user_id, email)
+    refresh_token, refresh_id, refresh_exp = create_refresh_token(user_id, email)
+    store_refresh_token(conn, user_id, refresh_id, refresh_exp, payload.device_id or "")
+    conn.commit()
+
+    return {
+        "user_id": user_id,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "expires_in": access_exp - int(datetime.now(timezone.utc).timestamp()),
+        "token_type": "Bearer",
+        "email": email,
+    }
+
+
+@app.post("/v1/auth/refresh", response_model=TokenResponse)
+def refresh_token(payload: RefreshRequest, conn=Depends(get_conn)):
+    refresh_payload = verify_refresh_token(payload.refresh_token)
+    if not refresh_payload:
+        raise HTTPException(status_code=401, detail="invalid refresh token")
+    refresh_id = refresh_payload.get("jti")
+    if not refresh_id:
+        raise HTTPException(status_code=401, detail="invalid refresh token")
+    record = get_refresh_token(conn, refresh_id)
+    if not is_refresh_token_active(record):
+        raise HTTPException(status_code=401, detail="refresh token revoked")
+    user_id = refresh_payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="invalid refresh token")
+    user = get_user_by_id(conn, user_id)
+    if not user:
+        raise HTTPException(status_code=401, detail="user not found")
+
+    revoke_refresh_token(conn, refresh_id)
+    access_token, access_exp = create_access_token(user_id, user.get("email"))
+    new_refresh_token, new_refresh_id, new_refresh_exp = create_refresh_token(user_id, user.get("email"))
+    store_refresh_token(conn, user_id, new_refresh_id, new_refresh_exp, record.get("device_id") if record else None)
+    conn.commit()
+    return {
+        "user_id": user_id,
+        "access_token": access_token,
+        "refresh_token": new_refresh_token,
+        "expires_in": access_exp - int(datetime.now(timezone.utc).timestamp()),
+        "token_type": "Bearer",
+        "email": user.get("email"),
     }
 
 
@@ -472,9 +747,39 @@ def logout(request: Request, conn=Depends(get_conn)):
     token = _get_bearer_token(request)
     if not token:
         raise HTTPException(status_code=401, detail="auth required")
+    payload = verify_refresh_token(token)
+    if payload and payload.get("jti"):
+        revoke_refresh_token(conn, payload["jti"])
+        conn.commit()
+        return {"revoked": True}
     revoked = revoke_session(conn, token)
     conn.commit()
     return {"revoked": revoked}
+
+
+@app.get("/v1/users/me/settings", response_model=UserSettingsResponse)
+def get_user_settings_api(current_user=Depends(require_user), conn=Depends(get_conn)):
+    settings = get_user_settings(conn, current_user["user_id"])
+    updated_at = settings.get("updated_at")
+    return {
+        "store_messages": bool(settings.get("store_messages")),
+        "updated_at": updated_at.isoformat() if updated_at else None,
+    }
+
+
+@app.patch("/v1/users/me/settings", response_model=UserSettingsResponse)
+def update_user_settings_api(
+    payload: UserSettingsUpdateRequest,
+    current_user=Depends(require_user),
+    conn=Depends(get_conn),
+):
+    settings = update_user_settings(conn, current_user["user_id"], payload.store_messages)
+    conn.commit()
+    updated_at = settings.get("updated_at")
+    return {
+        "store_messages": bool(settings.get("store_messages")),
+        "updated_at": updated_at.isoformat() if updated_at else None,
+    }
 
 
 @app.get("/v1/bible/bookmarks", response_model=BookmarkListResponse)
@@ -672,42 +977,122 @@ def delete_memo(
 
 
 @app.post("/v1/chat/conversations", response_model=ChatCreateResponse)
-def create_conversation(payload: ChatCreateRequest, conn=Depends(get_conn)):
+def create_conversation(payload: ChatCreateRequest, request: Request, conn=Depends(get_conn)):
+    current_user = get_optional_user(request, conn)
     effective_version_id = select_version_id(payload.locale)
+    if current_user:
+        settings = get_user_settings(conn, current_user["user_id"])
+        store_messages = bool(settings.get("store_messages"))
+        mode = "authenticated"
+        expires_at = None
+        turn_limit = 0
+        turn_count = 0
+        user_id = current_user["user_id"]
+        daily_info = None
+    else:
+        store_messages = False
+        mode = "anonymous"
+        expires_at, _ttl_sec = build_anonymous_meta_ttl()
+        turn_limit = ANON_CHAT_TURN_LIMIT
+        turn_count = 0
+        user_id = None
+        device_id = (payload.device_id or "").strip()
+        if device_id in {"web", "mobile"}:
+            device_id = ""
+        client_ip = _get_client_ip(request)
+        identifier = device_id or client_ip
+        scope = "device" if device_id else "ip"
+        daily_info = get_anonymous_daily_usage(identifier, ANON_DAILY_TURN_LIMIT, scope=scope)
+
     record = store.create(
         payload.device_id,
         payload.locale,
         effective_version_id,
-        store_messages=payload.store_messages,
+        store_messages=store_messages,
         conn=conn,
+        mode=mode,
+        expires_at=expires_at.isoformat() if expires_at else None,
+        turn_limit=turn_limit,
+        turn_count=turn_count,
+        user_id=user_id,
     )
+    try:
+        meta = init_conversation_meta(
+            record["conversation_id"],
+            mode,
+            store_messages,
+            expires_at,
+            turn_limit,
+            turn_count,
+            user_id=user_id,
+            locale=payload.locale,
+            version_id=effective_version_id,
+        )
+    except Exception:
+        raise HTTPException(status_code=503, detail="chat store unavailable")
+
     log_chat_event(
         "chat_created",
         {
             "conversation_id": record["conversation_id"],
             "version_id": record["version_id"],
-            "store_messages": record["store_messages"],
+            "store_messages": store_messages,
+            "mode": mode,
         },
     )
+    meta_payload = _meta_payload(meta)
+    meta_payload.update(_daily_payload(daily_info))
     return {
         "conversation_id": record["conversation_id"],
         "created_at": record["created_at"],
-        "store_messages": record["store_messages"],
+        "store_messages": store_messages,
+        "mode": mode,
+        "expires_at": meta_payload["expires_at"],
+        "turn_limit": meta_payload["turn_limit"],
+        "turn_count": meta_payload["turn_count"],
+        "remaining_turns": meta_payload["remaining_turns"],
+        "daily_turn_limit": meta_payload["daily_turn_limit"],
+        "daily_turn_count": meta_payload["daily_turn_count"],
+        "daily_remaining": meta_payload["daily_remaining"],
     }
 
 
 @app.get("/v1/chat/conversations/{conversation_id}", response_model=ChatConversationResponse)
-def get_conversation(conversation_id: str, conn=Depends(get_conn)):
+def get_conversation(conversation_id: str, request: Request, conn=Depends(get_conn)):
     record = store.get(conversation_id, conn=conn)
     if not record:
         raise HTTPException(status_code=404, detail="conversation not found")
+    meta = get_conversation_meta(conversation_id)
+    daily_info = None
+    if meta and meta.get("mode") == "anonymous":
+        device_id = (record.get("device_id") or "").strip()
+        if device_id in {"web", "mobile"}:
+            device_id = ""
+        client_ip = _get_client_ip(request)
+        identifier = device_id or client_ip
+        scope = "device" if device_id else "ip"
+        daily_info = get_anonymous_daily_usage(identifier, ANON_DAILY_TURN_LIMIT, scope=scope)
+    meta_payload = _meta_payload(meta)
+    meta_payload.update(_daily_payload(daily_info))
     return {
         "conversation_id": record["conversation_id"],
         "created_at": record["created_at"],
         "version_id": record["version_id"],
-        "store_messages": record.get("store_messages", False),
+        "store_messages": (
+            meta_payload["store_messages"]
+            if meta_payload["store_messages"] is not None
+            else record.get("store_messages", False)
+        ),
         "summary": record.get("summary", ""),
         "messages": record.get("messages", []),
+        "mode": meta.get("mode") if meta else record.get("mode"),
+        "expires_at": meta_payload["expires_at"],
+        "turn_limit": meta_payload["turn_limit"],
+        "turn_count": meta_payload["turn_count"],
+        "remaining_turns": meta_payload["remaining_turns"],
+        "daily_turn_limit": meta_payload["daily_turn_limit"],
+        "daily_turn_count": meta_payload["daily_turn_count"],
+        "daily_remaining": meta_payload["daily_remaining"],
     }
 
 
@@ -724,10 +1109,84 @@ def delete_conversation(conversation_id: str, conn=Depends(get_conn)):
     "/v1/chat/conversations/{conversation_id}/messages",
     response_model=ChatMessageResponse,
 )
-def post_message(conversation_id: str, payload: ChatMessageRequest, conn=Depends(get_conn)):
+def post_message(
+    conversation_id: str,
+    payload: ChatMessageRequest,
+    request: Request = None,
+    conn=Depends(get_conn),
+):
     record = store.get(conversation_id, conn=conn)
     if not record:
         raise HTTPException(status_code=404, detail="conversation not found")
+    meta = get_conversation_meta(conversation_id)
+    if not meta:
+        fallback_mode = record.get("mode") or (
+            "authenticated" if record.get("store_messages") else "anonymous"
+        )
+        if fallback_mode == "anonymous":
+            expires_at, _ttl_sec = build_anonymous_meta_ttl()
+            turn_limit = ANON_CHAT_TURN_LIMIT
+        else:
+            expires_at = None
+            turn_limit = 0
+        try:
+            meta = init_conversation_meta(
+                conversation_id,
+                fallback_mode,
+                bool(record.get("store_messages")),
+                expires_at,
+                turn_limit,
+                turn_count=int(record.get("turn_count") or 0),
+                user_id=record.get("user_id"),
+                locale=record.get("locale"),
+                version_id=record.get("version_id"),
+            )
+        except Exception:
+            raise HTTPException(status_code=503, detail="chat store unavailable")
+
+    if meta.get("mode") == "anonymous":
+        expires_at_text = meta.get("expires_at")
+        if expires_at_text:
+            try:
+                expires_at = datetime.fromisoformat(expires_at_text)
+                now = datetime.now(timezone.utc)
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=timezone.utc)
+                if expires_at <= now:
+                    raise HTTPException(status_code=410, detail="session expired")
+            except ValueError:
+                pass
+        device_id = (record.get("device_id") or "").strip()
+        if device_id in {"web", "mobile"}:
+            device_id = ""
+        client_ip = _get_client_ip(request) if request else ""
+        identifier = device_id or client_ip
+        scope = "device" if device_id else "ip"
+        daily_status = enforce_anonymous_daily_limit(
+            identifier, ANON_DAILY_TURN_LIMIT, scope=scope
+        )
+        if daily_status.get("status") == "limit":
+            raise HTTPException(status_code=429, detail="daily trial limit reached")
+        daily_info = daily_status
+    else:
+        daily_info = None
+    try:
+        turn_info = enforce_turn_and_increment(conversation_id)
+    except Exception:
+        raise HTTPException(status_code=503, detail="chat store unavailable")
+    if turn_info.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail="conversation not found")
+    if turn_info.get("status") == "expired":
+        raise HTTPException(status_code=410, detail="session expired")
+    if turn_info.get("status") == "limit":
+        raise HTTPException(status_code=429, detail="trial limit reached")
+    meta_payload = _meta_payload(meta, turn_info)
+    meta_payload.update(_daily_payload(daily_info))
+    record["store_messages"] = bool(meta_payload.get("store_messages"))
+    record["mode"] = meta.get("mode")
+    record["expires_at"] = meta_payload.get("expires_at")
+    record["turn_limit"] = meta_payload.get("turn_limit")
+    record["turn_count"] = meta_payload.get("turn_count")
 
     sanitized_message = _mask_pii(payload.user_message)
     citation_version_id = select_citation_version_id(record.get("locale"), sanitized_message)
@@ -856,6 +1315,7 @@ def post_message(conversation_id: str, payload: ChatMessageRequest, conn=Depends
                     "exclude_reason": [],
                 },
                 "direct_reference": True,
+                **meta_payload,
             },
         }
 
@@ -888,6 +1348,7 @@ def post_message(conversation_id: str, payload: ChatMessageRequest, conn=Depends
                     "trigger_reason": [],
                     "exclude_reason": [],
                 },
+                **meta_payload,
             },
         }
 
@@ -988,6 +1449,7 @@ def post_message(conversation_id: str, payload: ChatMessageRequest, conn=Depends
             "recent_turns": len(recent_messages),
             "summary": summary,
             "gating": gating,
+            **meta_payload,
         },
     }
 

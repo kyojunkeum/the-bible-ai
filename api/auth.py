@@ -213,6 +213,21 @@ def create_user(conn, email: str, password: str) -> dict:
     return {"user_id": user_id, "email": email}
 
 
+def create_user_oauth(conn, email: str) -> dict:
+    user_id = uuid.uuid4().hex
+    random_password = secrets.token_urlsafe(32)
+    password_hash = hash_password(random_password)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO app_user (user_id, email, password_hash)
+            VALUES (%s, %s, %s)
+            """,
+            (user_id, email, password_hash),
+        )
+    return {"user_id": user_id, "email": email}
+
+
 def get_user_by_email(conn, email: str) -> dict | None:
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
@@ -261,6 +276,19 @@ def create_session(conn, user_id: str, device_id: str | None = None) -> dict:
             (now, user_id),
         )
     return {"session_token": token, "expires_at": expires_at}
+
+
+def update_last_login(conn, user_id: str) -> None:
+    now = datetime.now(timezone.utc)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE app_user
+            SET last_login = %s
+            WHERE user_id = %s
+            """,
+            (now, user_id),
+        )
 
 
 def get_session(conn, token: str) -> dict | None:

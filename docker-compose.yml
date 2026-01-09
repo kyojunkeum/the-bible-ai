@@ -12,13 +12,16 @@ services:
       OLLAMA_MODEL: qwen2:7b
       AUTH_PEPPER: c1CMQ0_gBnD6pBIIurIkKE5dTxVuS0YNIAY06DTb18o
       AUTH_CAPTCHA_BYPASS: 8kzG3908GpxBUf-fMBhyQzNJ5OjSJBLi
+      REDIS_URL: redis://redis:6379/0
     ports:
       - "9000:9000"
     volumes:
       - ./:/app
+      - hf_cache:/app/.cache/huggingface
     depends_on:
       - postgres
       - ollama
+      - redis
     command: uvicorn api.main:app --reload --host 0.0.0.0 --port 9000
     restart: unless-stopped
   ollama:
@@ -42,7 +45,14 @@ services:
       - ./pgdata:/var/lib/postgresql/data
       - ./db:/docker-entrypoint-initdb.d
     restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    container_name: bible-redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
 
 volumes:
   pgdata:
   ollama:
+  hf_cache:

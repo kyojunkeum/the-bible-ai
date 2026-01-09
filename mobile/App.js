@@ -2,20 +2,30 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   KeyboardAvoidingView,
+  Linking,
   Modal,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
   View
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
+import * as Crypto from "expo-crypto";
 
 const API_BASE = process.env.EXPO_PUBLIC_API_BASE || "http://localhost:9000";
-const DEVICE_ID = "mobile";
+const VERSE_FONT_SIZE_KEY = "bible:verse_font_size";
+const SPLASH_DURATION_MS = 5000;
+const SPLASH_MESSAGE_KO =
+  "평안, 말씀을 대화로, 안전하게, 읽기 검색 상담을 하나의 앱에서 경험합니다";
+const SPLASH_MESSAGE_EN =
+  "Peaceful scripture through conversation. Reader, search, and counseling in one app.";
+const FONT_SIZE_MIN = 16;
+const FONT_SIZE_MAX = 28;
 const VERSION_OPTIONS = [
   { id: "krv", labelKo: "개역한글판", labelEn: "Korean (KRV)" },
   { id: "eng-web", labelKo: "WEB", labelEn: "English (WEB)" }
@@ -99,10 +109,22 @@ const STORAGE_KEYS = {
   reader: "bible:last_reader",
   tab: "bible:last_tab",
   authToken: "bible:auth_token",
+  authRefresh: "bible:auth_refresh_token",
   authUser: "bible:auth_user",
   authEmail: "bible:auth_email",
-  uiLang: "bible:ui_lang"
+  uiLang: "bible:ui_lang",
+  privacyNotice: "bible:privacy_notice_seen",
+  chatStorageConsent: "bible:chat_storage_consent",
+  chatStorageSync: "bible:chat_storage_sync",
+  deviceId: "bible:device_id"
 };
+
+const PKCE_VERIFIER_PREFIX = "pkce_verifier:";
+const pkceVerifierKey = (state) => `${PKCE_VERIFIER_PREFIX}${state}`;
+const CODE_VERIFIER_CHARS =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+const OAUTH_REDIRECT_SCHEME = "thebibleai";
+const OAUTH_REDIRECT_PATH = "oauth/google";
 
 // ✅ 추가: UI 언어 옵션
 const UI_LANGUAGE_OPTIONS = [
@@ -117,6 +139,29 @@ const normalizeUiLang = (lang) => {
   if (v.startsWith("ko")) return "ko";
   return "ko";
 };
+
+const generateDeviceId = () =>
+  `mobile_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+
+const generateCodeVerifier = (length = 64) => {
+  let result = "";
+  for (let i = 0; i < length; i += 1) {
+    const idx = Math.floor(Math.random() * CODE_VERIFIER_CHARS.length);
+    result += CODE_VERIFIER_CHARS.charAt(idx);
+  }
+  return result;
+};
+
+const buildCodeChallenge = async (verifier) => {
+  const digest = await Crypto.digestStringAsync(
+    Crypto.CryptoDigestAlgorithm.SHA256,
+    verifier,
+    { encoding: Crypto.CryptoEncoding.BASE64 }
+  );
+  return digest.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+};
+
+const buildRedirectUri = () => `${OAUTH_REDIRECT_SCHEME}://${OAUTH_REDIRECT_PATH}`;
 
 
 const makeVerseKey = (bookId, chapter, verse) => `${bookId}:${chapter}:${verse}`;
@@ -156,6 +201,9 @@ export default function App() {
 
   const [activeTab, setActiveTab] = useState("Reader");
   const [versionId, setVersionId] = useState("krv");
+  const [showSplash, setShowSplash] = useState(true);
+  const [verseFontSize, setVerseFontSize] = useState(18);
+  const [deviceId, setDeviceId] = useState("");
 
   const [uiLang, setUiLang] = useState("ko");
   const [uiLangModalOpen, setUiLangModalOpen] = useState(false);
@@ -189,15 +237,29 @@ export default function App() {
   const [chatMessages, setChatMessages] = useState([]);
   const [chatError, setChatError] = useState("");
   const [chatLoading, setChatLoading] = useState(false);
+  const [chatLimitReason, setChatLimitReason] = useState("");
 
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authCaptcha, setAuthCaptcha] = useState("");
   const [authUserId, setAuthUserId] = useState("");
   const [authToken, setAuthToken] = useState("");
+  const [authRefreshToken, setAuthRefreshToken] = useState("");
   const [authError, setAuthError] = useState("");
   const [authNotice, setAuthNotice] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
+  const [oauthError, setOauthError] = useState("");
+  const [oauthLoading, setOauthLoading] = useState(false);
+  const [chatStorageConsent, setChatStorageConsent] = useState(false);
+  const [chatStorageSynced, setChatStorageSynced] = useState(false);
+  const [showPrivacyNotice, setShowPrivacyNotice] = useState(false);
+  const [showStoreConfirm, setShowStoreConfirm] = useState(false);
+  const [settingsError, setSettingsError] = useState("");
+  const [settingsNotice, setSettingsNotice] = useState("");
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [serverStoreMessages, setServerStoreMessages] = useState(null);
+  const [chatMeta, setChatMeta] = useState(null);
+  const [chatLimitReached, setChatLimitReached] = useState(false);
 
   const [bookmarks, setBookmarks] = useState([]);
   const [bookmarksLoading, setBookmarksLoading] = useState(false);
@@ -301,6 +363,43 @@ export default function App() {
     return Array.from({ length: count }, (_, idx) => idx + 1);
   }, [selectedBook?.chapter_count]);
 
+  const refreshAccessToken = async () => {
+    if (!authRefreshToken) return null;
+    try {
+      const res = await fetch(`${API_BASE}/v1/auth/refresh`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: authRefreshToken })
+      });
+      if (!res.ok) throw new Error("refresh_failed");
+      const data = await res.json();
+      setAuthToken(data.access_token || "");
+      setAuthRefreshToken(data.refresh_token || "");
+      if (data.user_id) setAuthUserId(data.user_id);
+      if (data.email) setAuthEmail(data.email);
+      return data.access_token || null;
+    } catch (_) {
+      setAuthToken("");
+      setAuthRefreshToken("");
+      setAuthUserId("");
+      setAuthEmail("");
+      return null;
+    }
+  };
+
+  const authFetch = async (url, options = {}) => {
+    const headers = { ...(options.headers || {}) };
+    if (authToken) {
+      headers.Authorization = `Bearer ${authToken}`;
+    }
+    const res = await fetch(url, { ...options, headers });
+    if (res.status !== 401 || !authRefreshToken) return res;
+    const newToken = await refreshAccessToken();
+    if (!newToken) return res;
+    const retryHeaders = { ...(options.headers || {}), Authorization: `Bearer ${newToken}` };
+    return fetch(url, { ...options, headers: retryHeaders });
+  };
+
   useEffect(() => {
     let cancelled = false;
     const restoreState = async () => {
@@ -318,6 +417,8 @@ export default function App() {
         }
         const token = await AsyncStorage.getItem(STORAGE_KEYS.authToken);
         if (token) setAuthToken(token);
+        const refreshToken = await AsyncStorage.getItem(STORAGE_KEYS.authRefresh);
+        if (refreshToken) setAuthRefreshToken(refreshToken);
         const userId = await AsyncStorage.getItem(STORAGE_KEYS.authUser);
         if (userId) setAuthUserId(userId);
         const email = await AsyncStorage.getItem(STORAGE_KEYS.authEmail);
@@ -332,6 +433,34 @@ export default function App() {
           setUiLang(normalizeUiLang(savedUiLang ?? deviceLocale));
         }
 
+        const privacySeen = await AsyncStorage.getItem(STORAGE_KEYS.privacyNotice);
+        if (!privacySeen) {
+          setShowPrivacyNotice(true);
+        }
+        const savedConsent = await AsyncStorage.getItem(STORAGE_KEYS.chatStorageConsent);
+        if (savedConsent !== null) {
+          setChatStorageConsent(savedConsent === "true");
+        }
+        const savedSync = await AsyncStorage.getItem(STORAGE_KEYS.chatStorageSync);
+        if (savedSync !== null) {
+          setChatStorageSynced(savedSync === "true");
+        }
+
+        const savedFontSize = await AsyncStorage.getItem(VERSE_FONT_SIZE_KEY);
+        if (savedFontSize) {
+          const parsed = Number(savedFontSize);
+          if (Number.isFinite(parsed)) {
+            const clamped = Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, parsed));
+            setVerseFontSize(clamped);
+          }
+        }
+
+        let storedDeviceId = await AsyncStorage.getItem(STORAGE_KEYS.deviceId);
+        if (!storedDeviceId) {
+          storedDeviceId = generateDeviceId();
+          await AsyncStorage.setItem(STORAGE_KEYS.deviceId, storedDeviceId);
+        }
+        setDeviceId(storedDeviceId);
 
       } catch (_) {
         // Ignore storage restore failures
@@ -346,18 +475,40 @@ export default function App() {
   }, [deviceLocale]);
 
   useEffect(() => {
+    const timer = setTimeout(() => setShowSplash(false), SPLASH_DURATION_MS);
+    return () => clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
     AsyncStorage.setItem(STORAGE_KEYS.tab, activeTab).catch(() => {});
   }, [activeTab]);
 
   useEffect(() => {
-  AsyncStorage.setItem(STORAGE_KEYS.uiLang, uiLang).catch(() => {});
-}, [uiLang]);
+    AsyncStorage.setItem(STORAGE_KEYS.uiLang, uiLang).catch(() => {});
+  }, [uiLang]);
+
+  useEffect(() => {
+    AsyncStorage.setItem(STORAGE_KEYS.chatStorageConsent, String(chatStorageConsent)).catch(() => {});
+  }, [chatStorageConsent]);
+
+  useEffect(() => {
+    AsyncStorage.setItem(STORAGE_KEYS.chatStorageSync, String(chatStorageSynced)).catch(() => {});
+  }, [chatStorageSynced]);
+
+  useEffect(() => {
+    AsyncStorage.setItem(VERSE_FONT_SIZE_KEY, String(verseFontSize)).catch(() => {});
+  }, [verseFontSize]);
 
   useEffect(() => {
     if (authToken) {
       AsyncStorage.setItem(STORAGE_KEYS.authToken, authToken).catch(() => {});
     } else {
       AsyncStorage.removeItem(STORAGE_KEYS.authToken).catch(() => {});
+    }
+    if (authRefreshToken) {
+      AsyncStorage.setItem(STORAGE_KEYS.authRefresh, authRefreshToken).catch(() => {});
+    } else {
+      AsyncStorage.removeItem(STORAGE_KEYS.authRefresh).catch(() => {});
     }
     if (authUserId) {
       AsyncStorage.setItem(STORAGE_KEYS.authUser, authUserId).catch(() => {});
@@ -369,14 +520,45 @@ export default function App() {
     } else {
       AsyncStorage.removeItem(STORAGE_KEYS.authEmail).catch(() => {});
     }
-  }, [authToken, authUserId, authEmail]);
+  }, [authToken, authRefreshToken, authUserId, authEmail]);
+
+  useEffect(() => {
+    if (!authToken) {
+      setServerStoreMessages(null);
+      setChatMeta(null);
+      setConversationId("");
+      setChatMessages([]);
+      setChatLimitReached(false);
+      setChatLimitReason("");
+      setSettingsError("");
+      setSettingsNotice("");
+      return;
+    }
+    const loadSettings = async () => {
+      setSettingsError("");
+      setSettingsLoading(true);
+      try {
+        const res = await authFetch(`${API_BASE}/v1/users/me/settings`);
+        if (!res.ok) throw new Error(t("Failed to load settings.", "설정 불러오기 실패"));
+        const data = await res.json();
+        const storeValue = Boolean(data.store_messages);
+        setServerStoreMessages(storeValue);
+        if (!chatStorageSynced && storeValue === chatStorageConsent) {
+          setChatStorageSynced(true);
+        }
+      } catch (err) {
+        setSettingsError(String(err.message || err));
+      } finally {
+        setSettingsLoading(false);
+      }
+    };
+    loadSettings();
+  }, [authToken]);
 
   useEffect(() => {
     let cancelled = false;
     const loadBooks = async () => {
-      // ✅ 버전 전환 시 이전 상태 제거(레이스 방지)
-      setBooks([]);
-      setChapterData(null);
+      // ✅ 버전 전환 시 UI 유지 + 데이터만 갱신
       setChapterError("");
       setChapterNotice("");
       setBooksError("");
@@ -436,9 +618,7 @@ export default function App() {
           version_id: versionId,
           limit: "200"
         });
-        const res = await fetch(`${API_BASE}/v1/bible/bookmarks?${params.toString()}`, {
-          headers: { Authorization: `Bearer ${authToken}` }
-        });
+        const res = await authFetch(`${API_BASE}/v1/bible/bookmarks?${params.toString()}`);
         if (!res.ok) throw new Error(t("Failed to load bookmarks.", "북마크를 불러오지 못했습니다."));
         const data = await res.json();
         setBookmarks(data.items || []);
@@ -456,9 +636,7 @@ export default function App() {
           version_id: versionId,
           limit: "200"
         });
-        const res = await fetch(`${API_BASE}/v1/bible/memos?${params.toString()}`, {
-          headers: { Authorization: `Bearer ${authToken}` }
-        });
+        const res = await authFetch(`${API_BASE}/v1/bible/memos?${params.toString()}`);
         if (!res.ok) throw new Error(t("Failed to load memos.", "메모를 불러오지 못했습니다."));
         const data = await res.json();
         setMemos(data.items || []);
@@ -477,7 +655,7 @@ export default function App() {
     setMemoTarget(null);
     setMemoDraft("");
     setActiveVerseKey("");
-  }, [versionId, selectedBookId, chapter]);
+  }, [selectedBookId, chapter]);
 
   useEffect(() => {
     const maxChapter = Number(selectedBook?.chapter_count || 0);
@@ -506,14 +684,6 @@ export default function App() {
       // Ignore storage failures
     }
   };
-
-  // ✅ 버전이 바뀌면 채팅 세션/대화 초기화 (새 세션 유도)
-  useEffect(() => {
-    setConversationId("");
-    setChatMessages([]);
-    setChatError("");
-    setChatInput("");
-  }, [versionId]);
 
   const loadChapter = async (override) => {
     setChapterError("");
@@ -605,19 +775,37 @@ export default function App() {
 
   const ensureConversation = async () => {
     if (conversationId) return conversationId;
-    const res = await fetch(`${API_BASE}/v1/chat/conversations`, {
+    const res = await authFetch(`${API_BASE}/v1/chat/conversations`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ device_id: DEVICE_ID, locale: deviceLocale, version_id: versionId })
+      body: JSON.stringify({
+        device_id: deviceId || "mobile",
+        locale: deviceLocale,
+        version_id: versionId,
+        store_messages: chatStorageConsent
+      })
     });
     if (!res.ok) throw new Error(t("Failed to create session.", "세션 생성 실패"));
     const data = await res.json();
     setConversationId(data.conversation_id);
+    setChatMeta({
+      mode: data.mode,
+      store_messages: data.store_messages,
+      expires_at: data.expires_at,
+      turn_limit: data.turn_limit,
+      turn_count: data.turn_count,
+      remaining_turns: data.remaining_turns,
+      daily_turn_limit: data.daily_turn_limit,
+      daily_turn_count: data.daily_turn_count,
+      daily_remaining: data.daily_remaining
+    });
+    setChatLimitReached(false);
+    setChatLimitReason("");
     return data.conversation_id;
   };
 
   const sendMessage = async () => {
-    if (!chatInput.trim()) return;
+    if (!chatInput.trim() || chatLimitReached) return;
     setChatError("");
     setChatLoading(true);
     const userMessage = chatInput.trim();
@@ -625,13 +813,48 @@ export default function App() {
     setChatMessages((prev) => [...prev, { role: "user", content: userMessage }]);
     try {
       const cid = await ensureConversation();
-      const res = await fetch(`${API_BASE}/v1/chat/conversations/${cid}/messages`, {
+      const res = await authFetch(`${API_BASE}/v1/chat/conversations/${cid}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ user_message: userMessage, client_context: { app_version: "mobile" } })
       });
-      if (!res.ok) throw new Error(t("Failed to generate response.", "응답 생성 실패"));
+      if (!res.ok) {
+        if (res.status === 410) {
+          setConversationId("");
+          setChatLimitReached(false);
+          setChatLimitReason("");
+          throw new Error(t("Session expired.", "세션이 만료되었습니다."));
+        }
+        if (res.status === 429) {
+          const detail = await res
+            .json()
+            .then((data) => data?.error?.message || "")
+            .catch(() => "");
+          const isDailyLimit = detail === "daily trial limit reached";
+          setChatLimitReached(true);
+          setChatLimitReason(isDailyLimit ? "daily" : "trial");
+          throw new Error(
+            isDailyLimit
+              ? t("Daily limit reached for today.", "오늘 제한이 종료되었습니다.")
+              : t("Trial limit reached.", "체험 턴이 종료되었습니다.")
+          );
+        }
+        throw new Error(t("Failed to generate response.", "응답 생성 실패"));
+      }
       const data = await res.json();
+      if (data.memory) {
+        setChatMeta((prev) => ({
+          mode: prev?.mode || (authToken ? "authenticated" : "anonymous"),
+          store_messages: data.memory.store_messages ?? prev?.store_messages,
+          expires_at: data.memory.expires_at ?? prev?.expires_at,
+          turn_limit: data.memory.turn_limit ?? prev?.turn_limit,
+          turn_count: data.memory.turn_count ?? prev?.turn_count,
+          remaining_turns: data.memory.remaining_turns ?? prev?.remaining_turns,
+          daily_turn_limit: data.memory.daily_turn_limit ?? prev?.daily_turn_limit,
+          daily_turn_count: data.memory.daily_turn_count ?? prev?.daily_turn_count,
+          daily_remaining: data.memory.daily_remaining ?? prev?.daily_remaining
+        }));
+      }
       setChatMessages((prev) => [
         ...prev,
         { role: "assistant", content: data.assistant_message || "" }
@@ -642,6 +865,115 @@ export default function App() {
       setChatLoading(false);
     }
   };
+
+  const startGoogleOauth = async () => {
+    setOauthError("");
+    setOauthLoading(true);
+    try {
+      const verifier = generateCodeVerifier();
+      const challenge = await buildCodeChallenge(verifier);
+      const redirectUri = buildRedirectUri();
+      const res = await fetch(`${API_BASE}/v1/auth/oauth/google/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          redirect_uri: redirectUri,
+          code_challenge: challenge,
+          code_challenge_method: "S256",
+          device_id: deviceId || "mobile"
+        })
+      });
+      if (!res.ok) throw new Error(t("Google sign-in is not available.", "구글 로그인 사용 불가"));
+      const data = await res.json();
+      if (!data.state || !data.auth_url) {
+        throw new Error(t("Google sign-in failed to start.", "구글 로그인 시작 실패"));
+      }
+      await AsyncStorage.setItem(pkceVerifierKey(data.state), verifier);
+      await Linking.openURL(data.auth_url);
+    } catch (err) {
+      setOauthError(String(err.message || err));
+    } finally {
+      setOauthLoading(false);
+    }
+  };
+
+  const handleOauthUrl = async (url) => {
+    if (!url || !url.startsWith(`${OAUTH_REDIRECT_SCHEME}://`)) return;
+    const query = url.split("?")[1] || "";
+    if (!query) return;
+    const params = new URLSearchParams(query);
+    const code = params.get("code");
+    const state = params.get("state");
+    const error = params.get("error");
+    if (error) {
+      setOauthError(t("Google sign-in was canceled.", "구글 로그인이 취소되었습니다."));
+      setOauthLoading(false);
+      return;
+    }
+    if (!code || !state) {
+      setOauthError(t("Google sign-in response is incomplete.", "구글 로그인 응답이 불완전합니다."));
+      setOauthLoading(false);
+      return;
+    }
+    const verifier = await AsyncStorage.getItem(pkceVerifierKey(state));
+    await AsyncStorage.removeItem(pkceVerifierKey(state));
+    if (!verifier) {
+      setOauthError(t("Google sign-in failed. Please try again.", "구글 로그인에 실패했습니다."));
+      setOauthLoading(false);
+      return;
+    }
+    setOauthLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/v1/auth/oauth/google/exchange`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code,
+          state,
+          code_verifier: verifier,
+          device_id: deviceId || "mobile"
+        })
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const message =
+          data?.error?.message || t("Google sign-in failed.", "구글 로그인에 실패했습니다.");
+        throw new Error(message);
+      }
+      const data = await res.json();
+      setAuthToken(data.access_token || "");
+      setAuthRefreshToken(data.refresh_token || "");
+      setAuthUserId(data.user_id || "");
+      if (data.email) setAuthEmail(data.email);
+      setAuthPassword("");
+      setAuthCaptcha("");
+      setAuthNotice(t("Logged in with Google.", "구글 로그인 완료"));
+    } catch (err) {
+      setOauthError(String(err.message || err));
+    } finally {
+      setOauthLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    let active = true;
+    const handleIncomingUrl = (incomingUrl) => {
+      if (!incomingUrl) return;
+      handleOauthUrl(incomingUrl);
+    };
+    const checkInitialUrl = async () => {
+      const initialUrl = await Linking.getInitialURL();
+      if (active && initialUrl) {
+        handleIncomingUrl(initialUrl);
+      }
+    };
+    checkInitialUrl();
+    const subscription = Linking.addEventListener("url", ({ url }) => handleIncomingUrl(url));
+    return () => {
+      active = false;
+      subscription.remove();
+    };
+  }, [deviceId]);
 
   const handleRegister = async () => {
     setAuthError("");
@@ -654,7 +986,7 @@ export default function App() {
         body: JSON.stringify({
           email: authEmail,
           password: authPassword,
-          device_id: DEVICE_ID
+          device_id: deviceId || "mobile"
         })
       });
       if (!res.ok) {
@@ -663,8 +995,10 @@ export default function App() {
         throw new Error(message);
       }
       const data = await res.json();
-      setAuthToken(data.session_token || "");
+      setAuthToken(data.access_token || "");
+      setAuthRefreshToken(data.refresh_token || "");
       setAuthUserId(data.user_id || "");
+      if (data.email) setAuthEmail(data.email);
       setAuthPassword("");
       setAuthCaptcha("");
       setAuthNotice(t("Signed up and logged in.", "회원가입 및 로그인 완료"));
@@ -687,7 +1021,7 @@ export default function App() {
           email: authEmail,
           password: authPassword,
           captcha_token: authCaptcha || undefined,
-          device_id: DEVICE_ID
+          device_id: deviceId || "mobile"
         })
       });
       if (!res.ok) {
@@ -696,8 +1030,10 @@ export default function App() {
         throw new Error(message);
       }
       const data = await res.json();
-      setAuthToken(data.session_token || "");
+      setAuthToken(data.access_token || "");
+      setAuthRefreshToken(data.refresh_token || "");
       setAuthUserId(data.user_id || "");
+      if (data.email) setAuthEmail(data.email);
       setAuthPassword("");
       setAuthCaptcha("");
       setAuthNotice(t("Logged in.", "로그인 완료"));
@@ -713,14 +1049,17 @@ export default function App() {
     setAuthNotice("");
     setAuthLoading(true);
     try {
-      if (authToken) {
+      const logoutToken = authRefreshToken || authToken;
+      if (logoutToken) {
         await fetch(`${API_BASE}/v1/auth/logout`, {
           method: "POST",
-          headers: { Authorization: `Bearer ${authToken}` }
+          headers: { Authorization: `Bearer ${logoutToken}` }
         });
       }
       setAuthToken("");
+      setAuthRefreshToken("");
       setAuthUserId("");
+      setAuthEmail("");
       setAuthPassword("");
       setAuthCaptcha("");
       setBookmarks([]);
@@ -744,9 +1083,7 @@ export default function App() {
         version_id: versionId,
         limit: "200"
       });
-      const res = await fetch(`${API_BASE}/v1/bible/bookmarks?${params.toString()}`, {
-        headers: { Authorization: `Bearer ${authToken}` }
-      });
+      const res = await authFetch(`${API_BASE}/v1/bible/bookmarks?${params.toString()}`);
       if (!res.ok) throw new Error(t("Failed to load bookmarks.", "북마크를 불러오지 못했습니다."));
       const data = await res.json();
       setBookmarks(data.items || []);
@@ -766,15 +1103,87 @@ export default function App() {
         version_id: versionId,
         limit: "200"
       });
-      const res = await fetch(`${API_BASE}/v1/bible/memos?${params.toString()}`, {
-        headers: { Authorization: `Bearer ${authToken}` }
-      });
+      const res = await authFetch(`${API_BASE}/v1/bible/memos?${params.toString()}`);
       if (!res.ok) throw new Error(t("Failed to load memos.", "메모를 불러오지 못했습니다."));
       const data = await res.json();
       setMemos(data.items || []);
     } catch (err) {
       setMemosError(String(err.message || err));
     }
+  };
+
+  const applyPrivacyChoice = async (consentValue) => {
+    setChatStorageConsent(consentValue);
+    setShowPrivacyNotice(false);
+    try {
+      await AsyncStorage.setItem(STORAGE_KEYS.privacyNotice, "true");
+    } catch (_) {
+      // Ignore storage failures
+    }
+  };
+
+  const applyServerStoreSetting = async (nextValue, { resetConversation = false } = {}) => {
+    if (!authToken) return;
+    setSettingsError("");
+    setSettingsNotice("");
+    setSettingsLoading(true);
+    try {
+      const res = await authFetch(`${API_BASE}/v1/users/me/settings`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ store_messages: Boolean(nextValue) })
+      });
+      if (!res.ok) throw new Error(t("Failed to update settings.", "설정 변경 실패"));
+      const data = await res.json();
+      setServerStoreMessages(Boolean(data.store_messages));
+      setChatStorageSynced(true);
+      setSettingsNotice(
+        nextValue
+          ? t("Chat storage enabled.", "대화 저장이 켜졌습니다.")
+          : t("Chat storage disabled.", "대화 저장이 꺼졌습니다.")
+      );
+      if (resetConversation) {
+        setConversationId("");
+        setChatMessages([]);
+        setChatMeta(null);
+        setChatLimitReached(false);
+      }
+    } catch (err) {
+      setSettingsError(String(err.message || err));
+    } finally {
+      setSettingsLoading(false);
+    }
+  };
+
+  const requestStoreSettingChange = (nextValue) => {
+    if (!authToken) {
+      setSettingsError(t("Sign in to change settings.", "로그인 후 설정할 수 있습니다."));
+      return;
+    }
+    if (nextValue) {
+      setShowStoreConfirm(true);
+      return;
+    }
+    applyServerStoreSetting(false, { resetConversation: true });
+  };
+
+  const confirmStoreEnable = () => {
+    setShowStoreConfirm(false);
+    applyServerStoreSetting(true);
+  };
+
+  const syncLocalPreference = () => {
+    if (chatStorageConsent) {
+      requestStoreSettingChange(true);
+      return;
+    }
+    applyServerStoreSetting(false, { resetConversation: true });
+  };
+
+  const dismissSyncPrompt = () => {
+    setChatStorageSynced(true);
   };
 
   const toggleBookmark = async (bookId, verse) => {
@@ -794,17 +1203,15 @@ export default function App() {
           chapter: String(chapter),
           verse: String(verse)
         });
-        const res = await fetch(`${API_BASE}/v1/bible/bookmarks?${params.toString()}`, {
-          method: "DELETE",
-          headers: { Authorization: `Bearer ${authToken}` }
+        const res = await authFetch(`${API_BASE}/v1/bible/bookmarks?${params.toString()}`, {
+          method: "DELETE"
         });
         if (!res.ok) throw new Error(t("Failed to remove bookmark.", "북마크 해제에 실패했습니다."));
       } else {
-        const res = await fetch(`${API_BASE}/v1/bible/bookmarks`, {
+        const res = await authFetch(`${API_BASE}/v1/bible/bookmarks`, {
           method: "POST",
           headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${authToken}`
+            "Content-Type": "application/json"
           },
           body: JSON.stringify({
             version_id: versionId,
@@ -850,11 +1257,10 @@ export default function App() {
     setMemoSaving(true);
     setMemosError("");
     try {
-      const res = await fetch(`${API_BASE}/v1/bible/memos`, {
+      const res = await authFetch(`${API_BASE}/v1/bible/memos`, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${authToken}`
+          "Content-Type": "application/json"
         },
         body: JSON.stringify({
           version_id: versionId,
@@ -891,9 +1297,8 @@ export default function App() {
         chapter: String(memoTarget.chapter),
         verse: String(memoTarget.verse)
       });
-      const res = await fetch(`${API_BASE}/v1/bible/memos?${params.toString()}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${authToken}` }
+      const res = await authFetch(`${API_BASE}/v1/bible/memos?${params.toString()}`, {
+        method: "DELETE"
       });
       if (!res.ok) throw new Error(t("Failed to delete memo.", "메모 삭제에 실패했습니다."));
       await refreshMemos();
@@ -907,6 +1312,13 @@ export default function App() {
     }
   };
 
+  const adjustFontSize = (delta) => {
+    setVerseFontSize((prev) => {
+      const next = Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, prev + delta));
+      return next;
+    });
+  };
+
   const jumpToBookmark = (item) => {
     setActiveTab("Reader");
     setActiveVerseKey(makeVerseKey(item.book_id, item.chapter, item.verse));
@@ -916,6 +1328,16 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <SafeAreaView style={styles.root} edges={["top", "bottom"]}>
+        {showSplash ? (
+          <View style={styles.splashOverlay} pointerEvents="auto">
+            <View style={styles.splashCard}>
+              <Text style={styles.splashEyebrow}>평안</Text>
+              <Text style={styles.splashTitle}>
+                {t(SPLASH_MESSAGE_EN, SPLASH_MESSAGE_KO)}
+              </Text>
+            </View>
+          </View>
+        ) : null}
         <KeyboardAvoidingView
           style={styles.layout}
           behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -928,13 +1350,10 @@ export default function App() {
           >
             <View style={styles.hero}>
               <Text style={styles.eyebrow}>{t("Peace", "평안")}</Text>
-              <Text style={styles.title}>
-                {t("Safe scripture, guided through conversation", "말씀을 대화로, 안전하게")}
-              </Text>
               <Text style={styles.sub}>
                 {t(
-                  "Reader · Search · Counseling in one app.",
-                  "읽기 · 검색 · 상담을 하나의 앱에서 경험합니다."
+                  "Bible reading, search, and citation-safe counseling.",
+                  "성경 읽기, 검색, 성경 기반 상담을 제공합니다."
                 )}
               </Text>
             </View>
@@ -988,12 +1407,34 @@ export default function App() {
                     </TouchableOpacity>
                   </View>
                   <TouchableOpacity style={styles.primary} onPress={loadChapter}>
-                    <Text style={styles.primaryText}>
-                      {chapterLoading
-                        ? t("Loading", "불러오는 중")
-                        : t("Read chapter", "장 읽기")}
-                    </Text>
+                    <Text style={styles.primaryText}>{t("Read chapter", "장 읽기")}</Text>
                   </TouchableOpacity>
+                </View>
+                <View style={styles.fontControls}>
+                  <Text style={styles.fontLabel}>{t("Text size", "본문 글자 크기")}</Text>
+                  <View style={styles.fontButtons}>
+                    <TouchableOpacity
+                      style={[
+                        styles.fontButton,
+                        verseFontSize <= FONT_SIZE_MIN && styles.fontButtonDisabled
+                      ]}
+                      onPress={() => adjustFontSize(-1)}
+                      disabled={verseFontSize <= FONT_SIZE_MIN}
+                    >
+                      <Text style={styles.fontButtonText}>A-</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.fontValue}>{verseFontSize}px</Text>
+                    <TouchableOpacity
+                      style={[
+                        styles.fontButton,
+                        verseFontSize >= FONT_SIZE_MAX && styles.fontButtonDisabled
+                      ]}
+                      onPress={() => adjustFontSize(1)}
+                      disabled={verseFontSize >= FONT_SIZE_MAX}
+                    >
+                      <Text style={styles.fontButtonText}>A+</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
                 {chapterError ? <Text style={styles.error}>{chapterError}</Text> : null}
                 {chapterNotice ? <Text style={styles.meta}>{chapterNotice}</Text> : null}
@@ -1084,8 +1525,23 @@ export default function App() {
                           onLongPress={() => setActiveVerseKey(verseKey)}
                           delayLongPress={250}
                         >
-                          <Text style={styles.verseLine}>
-                            <Text style={styles.verseNum}>{verse.verse} </Text>
+                          <Text
+                            style={[
+                              styles.verseLine,
+                              {
+                                fontSize: verseFontSize,
+                                lineHeight: Math.round(verseFontSize * 1.6)
+                              }
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.verseNum,
+                                { fontSize: Math.max(12, Math.round(verseFontSize * 0.8)) }
+                              ]}
+                            >
+                              {verse.verse}{" "}
+                            </Text>
                             {verse.text}
                           </Text>
                         </Pressable>
@@ -1192,7 +1648,63 @@ export default function App() {
             {activeTab === "Chat" && (
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>{t("Counseling", "상담")}</Text>
+                {(chatMeta?.mode === "anonymous" || !authToken) && (
+                  <View style={styles.trialBanner}>
+                    <Text style={styles.trialBadge}>
+                      {t("Anonymous trial: not saved", "익명 체험: 저장되지 않음")}
+                    </Text>
+                    {chatMeta?.daily_turn_limit ? (
+                      <Text style={styles.trialNote}>
+                        {t(
+                          `Daily remaining ${chatMeta.daily_remaining ?? 0}/${chatMeta.daily_turn_limit}`,
+                          `오늘 남은 턴 ${chatMeta.daily_remaining ?? 0}/${chatMeta.daily_turn_limit}`
+                        )}
+                      </Text>
+                    ) : chatMeta?.turn_limit ? (
+                      <Text style={styles.trialNote}>
+                        {t(
+                          `Remaining ${chatMeta.remaining_turns ?? 0}/${chatMeta.turn_limit}`,
+                          `남은 턴 ${chatMeta.remaining_turns ?? 0}/${chatMeta.turn_limit}`
+                        )}
+                      </Text>
+                    ) : null}
+                    <Text style={styles.trialNote}>
+                      {t(
+                        "Storage options are available after sign-in.",
+                        "저장 옵션은 로그인 후 설정에서 선택 가능합니다."
+                      )}
+                    </Text>
+                  </View>
+                )}
                 {chatError ? <Text style={styles.error}>{chatError}</Text> : null}
+                {chatLimitReached && (
+                  <View style={styles.noticeCard}>
+                    <Text style={styles.noticeTitle}>
+                      {chatLimitReason === "daily"
+                        ? t("Daily limit reached", "오늘 제한 종료")
+                        : t("Trial limit reached", "체험 턴이 종료되었습니다")}
+                    </Text>
+                    <Text style={styles.meta}>
+                      {chatLimitReason === "daily"
+                        ? t(
+                            "You can continue tomorrow or sign in for longer sessions.",
+                            "내일 다시 이용하거나 로그인하면 더 길게 사용할 수 있습니다."
+                          )
+                        : t(
+                            "Sign in to continue and manage storage settings.",
+                            "로그인 후 계속 대화하고 저장 설정을 선택할 수 있습니다."
+                          )}
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.primary}
+                      onPress={() => setActiveTab("Settings")}
+                    >
+                      <Text style={styles.primaryText}>
+                        {t("Go to sign in", "로그인하러 가기")}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
                 <View style={styles.chatPanel}>
                   <View style={styles.chatList}>
                     {chatMessages.length === 0 && !chatLoading ? (
@@ -1254,11 +1766,15 @@ export default function App() {
                       value={chatInput}
                       onChangeText={setChatInput}
                       multiline
+                      editable={!chatLimitReached}
                     />
                     <TouchableOpacity
-                      style={[styles.chatSend, chatLoading && styles.chatSendDisabled]}
+                      style={[
+                        styles.chatSend,
+                        (chatLoading || chatLimitReached) && styles.chatSendDisabled
+                      ]}
                       onPress={sendMessage}
-                      disabled={chatLoading}
+                      disabled={chatLoading || chatLimitReached}
                     >
                       <Text style={styles.chatSendText}>{t("Send", "보내기")}</Text>
                     </TouchableOpacity>
@@ -1293,6 +1809,56 @@ export default function App() {
                 </View>
 
                 <View style={styles.card}>
+                  <Text style={styles.label}>{t("Chat storage", "대화 저장")}</Text>
+                  {!authToken ? (
+                    <Text style={styles.meta}>
+                      {t(
+                        "Sign in to change storage settings.",
+                        "저장 설정은 로그인 후 변경할 수 있습니다."
+                      )}
+                    </Text>
+                  ) : (
+                    <>
+                      <View style={styles.toggleRow}>
+                        <Text style={styles.settingValue}>
+                          {t("Store chat history", "대화 저장")}
+                        </Text>
+                        <Switch
+                          value={Boolean(serverStoreMessages)}
+                          onValueChange={(value) => requestStoreSettingChange(value)}
+                          disabled={settingsLoading}
+                        />
+                      </View>
+                      {settingsError ? <Text style={styles.error}>{settingsError}</Text> : null}
+                      {settingsNotice ? <Text style={styles.meta}>{settingsNotice}</Text> : null}
+                      {serverStoreMessages !== null && !chatStorageSynced && (
+                        <View style={styles.noticeCard}>
+                          <Text style={styles.noticeTitle}>
+                            {t("Apply your local default?", "로컬 기본값을 반영할까요?")}
+                          </Text>
+                          <Text style={styles.meta}>
+                            {t(
+                              `Current local default: ${chatStorageConsent ? "ON" : "OFF"}`,
+                              `현재 로컬 기본값: ${chatStorageConsent ? "ON" : "OFF"}`
+                            )}
+                          </Text>
+                          <View style={styles.noticeActions}>
+                            <TouchableOpacity style={styles.primary} onPress={syncLocalPreference}>
+                              <Text style={styles.primaryText}>
+                                {t("Apply to server", "서버에 반영")}
+                              </Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity style={styles.secondary} onPress={dismissSyncPrompt}>
+                              <Text style={styles.secondaryText}>{t("Later", "나중에")}</Text>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      )}
+                    </>
+                  )}
+                </View>
+
+                <View style={styles.card}>
                   <Text style={styles.label}>{t("Account", "계정")}</Text>
                   {authToken ? (
                     <View style={styles.accountInfo}>
@@ -1309,6 +1875,18 @@ export default function App() {
                   ) : (
 
                     <View style={styles.accountForm}>
+                      <TouchableOpacity
+                        style={[styles.primary, oauthLoading && styles.primaryDisabled]}
+                        onPress={startGoogleOauth}
+                        disabled={oauthLoading}
+                      >
+                        <Text style={styles.primaryText}>
+                          {oauthLoading
+                            ? t("Connecting to Google...", "구글 로그인 연결 중...")
+                            : t("Continue with Google", "Google로 계속하기")}
+                        </Text>
+                      </TouchableOpacity>
+                      {oauthError ? <Text style={styles.error}>{oauthError}</Text> : null}
                       <TextInput
                         style={styles.input}
                         placeholder="you@example.com"
@@ -1362,6 +1940,97 @@ export default function App() {
                 </View>
               </View>
             )}
+            <Modal
+              visible={showPrivacyNotice}
+              animationType="fade"
+              transparent
+              onRequestClose={() => setShowPrivacyNotice(false)}
+            >
+              <View style={styles.modalBackdrop}>
+                <View style={styles.modalCard}>
+                  <Text style={styles.modalTitle}>
+                    {t("Chat storage notice", "대화 저장 고지")}
+                  </Text>
+                  <Text style={styles.modalBody}>
+                    {t(
+                      "Anonymous trial: chats are not saved and disappear when you close the app.",
+                      "익명 체험: 대화는 저장되지 않고 앱을 닫으면 사라집니다."
+                    )}
+                  </Text>
+                  <Text style={styles.modalBody}>
+                    {t(
+                      "Signed-in users: chats are stored only if you enable it in settings.",
+                      "로그인 사용자: 대화 저장은 설정에서 켠 경우에만 저장됩니다."
+                    )}
+                  </Text>
+                  <Text style={styles.modalBody}>
+                    {t(
+                      "Safety: if crisis language is detected, responses may be limited.",
+                      "안전: 위기 표현이 감지되면 상담이 제한되고 도움 안내가 제공될 수 있습니다."
+                    )}
+                  </Text>
+                  <TouchableOpacity style={styles.primary} onPress={() => applyPrivacyChoice(true)}>
+                    <Text style={styles.primaryText}>
+                      {t("Agree and start", "동의하고 시작")}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.secondary}
+                    onPress={() => applyPrivacyChoice(false)}
+                  >
+                    <Text style={styles.secondaryText}>
+                      {t("Use without saving", "저장하지 않고 사용")}
+                    </Text>
+                  </TouchableOpacity>
+                  <Text style={styles.meta}>
+                    {t("You can change this later in settings.", "언제든 설정에서 변경 가능합니다.")}
+                  </Text>
+                </View>
+              </View>
+            </Modal>
+            <Modal
+              visible={showStoreConfirm}
+              animationType="fade"
+              transparent
+              onRequestClose={() => setShowStoreConfirm(false)}
+            >
+              <View style={styles.modalBackdrop}>
+                <View style={styles.modalCard}>
+                  <Text style={styles.modalTitle}>
+                    {t("Enable chat storage?", "대화 저장을 켤까요?")}
+                  </Text>
+                  <Text style={styles.modalBody}>
+                    {t(
+                      "Stored items: your chat messages (questions and responses).",
+                      "저장되는 것: 대화 내용(질문/답변)"
+                    )}
+                  </Text>
+                  <Text style={styles.modalBody}>
+                    {t(
+                      "Purpose: conversation history and service quality.",
+                      "목적: 대화 이력 제공 및 품질 개선"
+                    )}
+                  </Text>
+                  <Text style={styles.modalBody}>
+                    {t(
+                      "You can turn this off anytime in settings.",
+                      "언제든 OFF로 변경할 수 있습니다."
+                    )}
+                  </Text>
+                  <TouchableOpacity style={styles.primary} onPress={confirmStoreEnable}>
+                    <Text style={styles.primaryText}>
+                      {t("Agree and turn on", "동의하고 저장 켜기")}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.secondary}
+                    onPress={() => setShowStoreConfirm(false)}
+                  >
+                    <Text style={styles.secondaryText}>{t("Cancel", "취소")}</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </Modal>
             <Modal
               visible={uiLangModalOpen}
               animationType="slide"
@@ -1631,6 +2300,44 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#f6f1e9"
   },
+  splashOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "rgba(246, 241, 233, 0.97)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+    zIndex: 10
+  },
+  splashCard: {
+    backgroundColor: "#fff",
+    borderRadius: 24,
+    paddingVertical: 28,
+    paddingHorizontal: 24,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.1,
+    shadowRadius: 16,
+    elevation: 4
+  },
+  splashEyebrow: {
+    textTransform: "uppercase",
+    letterSpacing: 4,
+    fontSize: 11,
+    color: "#2f6b5b",
+    textAlign: "center",
+    marginBottom: 12
+  },
+  splashTitle: {
+    fontSize: 20,
+    fontWeight: "700",
+    color: "#1d1b1a",
+    lineHeight: 30,
+    textAlign: "center"
+  },
   layout: {
     flex: 1
   },
@@ -1656,7 +2363,8 @@ const styles = StyleSheet.create({
     letterSpacing: 2,
     textTransform: "uppercase",
     fontSize: 12,
-    color: "#2f6b5b"
+    color: "#2f6b5b",
+    marginBottom: 8
   },
   title: {
     fontSize: 26,
@@ -1777,6 +2485,43 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 12
+  },
+  fontControls: {
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: "#e7ddcf",
+    gap: 8
+  },
+  fontLabel: {
+    fontSize: 12,
+    color: "#5d5854"
+  },
+  fontButtons: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10
+  },
+  fontButton: {
+    borderWidth: 1,
+    borderColor: "#e7ddcf",
+    borderRadius: 999,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    backgroundColor: "#fff"
+  },
+  fontButtonDisabled: {
+    opacity: 0.4
+  },
+  fontButtonText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#1d1b1a"
+  },
+  fontValue: {
+    fontSize: 13,
+    color: "#5d5854"
   },
   inputWrap: {
     flex: 1
@@ -1934,6 +2679,39 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontWeight: "600"
   },
+  trialBanner: {
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "#e7ddcf",
+    padding: 12,
+    gap: 6,
+    marginBottom: 10
+  },
+  trialBadge: {
+    color: "#b83d25",
+    fontWeight: "700"
+  },
+  trialNote: {
+    fontSize: 12,
+    color: "#5d5854"
+  },
+  noticeCard: {
+    borderWidth: 1,
+    borderColor: "#e7ddcf",
+    borderRadius: 16,
+    padding: 12,
+    marginBottom: 12,
+    backgroundColor: "#fff"
+  },
+  noticeTitle: {
+    fontWeight: "700",
+    marginBottom: 6
+  },
+  noticeActions: {
+    gap: 8,
+    marginTop: 8
+  },
   cardTitle: {
     fontWeight: "700",
     marginBottom: 8
@@ -2019,6 +2797,12 @@ const styles = StyleSheet.create({
     color: "#5d5854",
     fontSize: 12
   },
+  toggleRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 8
+  },
   error: {
     backgroundColor: "#ffe7e0",
     color: "#9a2f1f",
@@ -2041,6 +2825,11 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "700",
     marginBottom: 12
+  },
+  modalBody: {
+    color: "#5d5854",
+    marginBottom: 8,
+    lineHeight: 18
   },
   modalList: {
     marginBottom: 12

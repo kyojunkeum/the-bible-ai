@@ -117,6 +117,14 @@ class ChatCreateResponse(BaseModel):
     conversation_id: str
     created_at: str
     store_messages: bool = False
+    mode: str | None = None
+    expires_at: str | None = None
+    turn_limit: int | None = None
+    turn_count: int | None = None
+    remaining_turns: int | None = None
+    daily_turn_limit: int | None = None
+    daily_turn_count: int | None = None
+    daily_remaining: int | None = None
 
 
 class ChatMessageRequest(BaseModel):
@@ -151,6 +159,14 @@ class ChatMemory(BaseModel):
     summary: str = ""
     gating: Optional[ChatGating] = None
     direct_reference: Optional[bool] = None
+    store_messages: Optional[bool] = None
+    expires_at: Optional[str] = None
+    turn_limit: Optional[int] = None
+    turn_count: Optional[int] = None
+    remaining_turns: Optional[int] = None
+    daily_turn_limit: Optional[int] = None
+    daily_turn_count: Optional[int] = None
+    daily_remaining: Optional[int] = None
 
 
 class ChatMessageResponse(BaseModel):
@@ -166,6 +182,14 @@ class ChatConversationResponse(BaseModel):
     store_messages: bool
     summary: str = ""
     messages: List[dict]
+    mode: str | None = None
+    expires_at: str | None = None
+    turn_limit: int | None = None
+    turn_count: int | None = None
+    remaining_turns: int | None = None
+    daily_turn_limit: int | None = None
+    daily_turn_count: int | None = None
+    daily_remaining: int | None = None
 
 
 class ChatDeleteResponse(BaseModel):
@@ -200,3 +224,45 @@ class AuthMeResponse(BaseModel):
     email: str
     created_at: str
     last_login: str | None = None
+
+
+class UserSettingsResponse(BaseModel):
+    store_messages: bool
+    updated_at: str | None = None
+
+
+class UserSettingsUpdateRequest(BaseModel):
+    store_messages: bool
+
+
+class OAuthStartRequest(BaseModel):
+    redirect_uri: str
+    code_challenge: str
+    code_challenge_method: str = "S256"
+    device_id: str | None = None
+
+
+class OAuthStartResponse(BaseModel):
+    provider: str
+    auth_url: str
+    state: str
+
+
+class OAuthExchangeRequest(BaseModel):
+    code: str
+    state: str
+    code_verifier: str
+    device_id: str | None = None
+
+
+class TokenResponse(BaseModel):
+    user_id: str
+    access_token: str
+    refresh_token: str
+    token_type: str = "Bearer"
+    expires_in: int
+    email: str | None = None
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str

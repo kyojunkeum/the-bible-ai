@@ -12,11 +12,11 @@ from psycopg2.extras import RealDictCursor
 
 from etl.utils import normalize_text
 
-from api.search import search_verses, search_verses_vector
+from api.search import TRGM_SIMILARITY_THRESHOLD, search_verses, search_verses_vector
 
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://ollama:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1")
-OLLAMA_TIMEOUT_SEC = float(os.getenv("OLLAMA_TIMEOUT_SEC", "20"))
+OLLAMA_TIMEOUT_SEC = float(os.getenv("OLLAMA_TIMEOUT_SEC", "60"))
 OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "768"))
 EMBEDDING_TIMEOUT_SEC = float(os.getenv("EMBEDDING_TIMEOUT_SEC", "5"))
@@ -29,10 +29,13 @@ MAX_QUERY_TERMS = int(os.getenv("MAX_QUERY_TERMS", "20"))
 VECTOR_ENABLED = os.getenv("VECTOR_ENABLED", "1") == "1"
 VECTOR_TOPK = int(os.getenv("VECTOR_TOPK", "50"))
 VECTOR_WINDOW_SIZE = int(os.getenv("VECTOR_WINDOW_SIZE", "5"))
-RERANK_MODE = os.getenv("RERANK_MODE", "llm")
+RERANK_MODE = "ko-bert"
 RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "30"))
 RERANK_TOP_N = int(os.getenv("RERANK_TOP_N", "3"))
 KOBERT_MODEL_ID = os.getenv("KOBERT_MODEL_ID", "skt/kobert-base-v1")
+MIN_CITATION_RANK = float(os.getenv("MIN_CITATION_RANK", "0.05"))
+MIN_CITATION_TRGM = float(os.getenv("MIN_CITATION_TRGM", str(TRGM_SIMILARITY_THRESHOLD)))
+MIN_CITATION_KEYWORD_HITS = int(os.getenv("MIN_CITATION_KEYWORD_HITS", "1"))
 
 SUMMARY_MAX_CHARS = 800
 SUMMARY_TRIGGER_TURNS = 30
@@ -158,6 +161,11 @@ class ConversationStore:
         store_messages: bool,
         conversation_id: Optional[str] = None,
         created_at: Optional[str] = None,
+        mode: str = "anonymous",
+        expires_at: Optional[str] = None,
+        turn_limit: int = 0,
+        turn_count: int = 0,
+        user_id: Optional[str] = None,
     ) -> dict:
         conversation_id = conversation_id or uuid.uuid4().hex
         now = created_at or datetime.now(timezone.utc).isoformat()
@@ -168,6 +176,11 @@ class ConversationStore:
             "locale": locale,
             "version_id": version_id,
             "store_messages": store_messages,
+            "mode": mode,
+            "expires_at": expires_at,
+            "turn_limit": turn_limit,
+            "turn_count": turn_count,
+            "user_id": user_id,
             "messages": [],
             "summary": "",
         }
@@ -181,9 +194,24 @@ class ConversationStore:
         version_id: str,
         store_messages: bool = False,
         conn=None,
+        mode: str = "anonymous",
+        expires_at: Optional[str] = None,
+        turn_limit: int = 0,
+        turn_count: int = 0,
+        user_id: Optional[str] = None,
     ) -> dict:
         if conn is None:
-            return self._mem_create(device_id, locale, version_id, store_messages)
+            return self._mem_create(
+                device_id,
+                locale,
+                version_id,
+                store_messages,
+                mode=mode,
+                expires_at=expires_at,
+                turn_limit=turn_limit,
+                turn_count=turn_count,
+                user_id=user_id,
+            )
         conversation_id = uuid.uuid4().hex
         now = datetime.now(timezone.utc).isoformat()
         try:
@@ -199,7 +227,17 @@ class ConversationStore:
             conn.commit()
         except Exception:
             conn.rollback()
-            return self._mem_create(device_id, locale, version_id, store_messages)
+            return self._mem_create(
+                device_id,
+                locale,
+                version_id,
+                store_messages,
+                mode=mode,
+                expires_at=expires_at,
+                turn_limit=turn_limit,
+                turn_count=turn_count,
+                user_id=user_id,
+            )
         return self._mem_create(
             device_id,
             locale,
@@ -207,6 +245,11 @@ class ConversationStore:
             store_messages,
             conversation_id=conversation_id,
             created_at=now,
+            mode=mode,
+            expires_at=expires_at,
+            turn_limit=turn_limit,
+            turn_count=turn_count,
+            user_id=user_id,
         )
 
     def get(self, conversation_id: str, conn=None) -> Optional[dict]:
@@ -254,6 +297,11 @@ class ConversationStore:
             "summary": conv[5] or "",
             "created_at": conv[6].isoformat(),
             "messages": messages,
+            "mode": None,
+            "expires_at": None,
+            "turn_limit": None,
+            "turn_count": None,
+            "user_id": None,
         }
         self._conversations[conversation_id] = record
         return record
@@ -569,6 +617,19 @@ def _dedupe_terms(terms: List[str]) -> List[str]:
     return deduped
 
 
+def _passes_min_relevance(item: dict, score_terms: List[str]) -> bool:
+    keyword_hits = int(item.get("keyword_hits") or 0)
+    rank = float(item.get("rank") or 0.0)
+    trgm_sim = float(item.get("trgm_sim") or 0.0)
+    if score_terms and keyword_hits >= MIN_CITATION_KEYWORD_HITS:
+        return True
+    if rank >= MIN_CITATION_RANK:
+        return True
+    if trgm_sim >= MIN_CITATION_TRGM:
+        return True
+    return False
+
+
 def _merge_candidates(fts_items: List[dict], vector_items: List[dict]) -> List[dict]:
     merged: Dict[tuple, dict] = {}
     for item in fts_items:
@@ -834,14 +895,9 @@ def _rerank_with_kobert(context_text: str, candidates: List[dict]) -> Optional[L
 def _rerank_candidates(context_text: str, candidates: List[dict]) -> List[dict]:
     if not candidates:
         return candidates
-    mode = (RERANK_MODE or "llm").lower()
+    mode = (RERANK_MODE or "ko-bert").lower()
     if mode == "ko-bert":
         reranked = _rerank_with_kobert(context_text, candidates)
-        if reranked:
-            return reranked
-        mode = "llm"
-    if mode == "llm":
-        reranked = _rerank_with_llm(context_text, candidates)
         if reranked:
             return reranked
     return candidates
@@ -1064,7 +1120,24 @@ def retrieve_citations(
         )
 
     vector_items: List[dict] = []
-    if VECTOR_ENABLED:
+
+    if results.get("total", 0) == 0 and synonyms:
+        _log_event("retrieval_zero", {"version_id": version_id, "q": query_text})
+        synonym_query = " ".join(synonyms)
+        results = search_verses(conn, version_id, synonym_query, limit * 3, 0)
+        meta["query_text_original"] = query_text
+        meta["query_text"] = synonym_query
+    if results.get("total", 0) == 0 and query_text != user_message:
+        _log_event("retrieval_zero", {"version_id": version_id, "q": meta["query_text"]})
+        results = search_verses(conn, version_id, user_message, limit * 3, 0)
+        meta["query_text_original"] = meta["query_text"]
+        meta["query_text"] = user_message
+    if results.get("total", 0) == 0:
+        _log_event("retrieval_zero", {"version_id": version_id, "q": user_message})
+
+    fts_items = results.get("items", [])
+    meta["fts_candidates"] = len(fts_items)
+    if VECTOR_ENABLED and meta["fts_candidates"] > 0:
         embed = _embed_text(context_text)
         if embed:
             vec_start = time.perf_counter()
@@ -1083,29 +1156,14 @@ def retrieve_citations(
             )
         else:
             meta["vector_error"] = "embedding_failed"
+    elif VECTOR_ENABLED:
+        meta["vector_skipped"] = "fts_empty"
     meta["vector_candidates"] = len(vector_items)
     if VECTOR_ENABLED and not vector_items:
         _log_event(
             "vector_zero",
             {"version_id": version_id, "window_size": VECTOR_WINDOW_SIZE},
         )
-
-    if results.get("total", 0) == 0 and synonyms:
-        _log_event("retrieval_zero", {"version_id": version_id, "q": query_text})
-        synonym_query = " ".join(synonyms)
-        results = search_verses(conn, version_id, synonym_query, limit * 3, 0)
-        meta["query_text_original"] = query_text
-        meta["query_text"] = synonym_query
-    if results.get("total", 0) == 0 and query_text != user_message:
-        _log_event("retrieval_zero", {"version_id": version_id, "q": meta["query_text"]})
-        results = search_verses(conn, version_id, user_message, limit * 3, 0)
-        meta["query_text_original"] = meta["query_text"]
-        meta["query_text"] = user_message
-    if results.get("total", 0) == 0:
-        _log_event("retrieval_zero", {"version_id": version_id, "q": user_message})
-
-    fts_items = results.get("items", [])
-    meta["fts_candidates"] = len(fts_items)
     items = _merge_candidates(fts_items, vector_items)
     meta["total_candidates"] = len(items)
     score_terms = keywords or topic_terms or synonyms
@@ -1145,6 +1203,8 @@ def retrieve_citations(
         if key in seen:
             continue
         seen.add(key)
+        if not _passes_min_relevance(item, score_terms):
+            continue
         citations.append(
             {
                 "version_id": version_id,
@@ -1173,7 +1233,10 @@ def retrieve_citations(
         for item in items[:10]
     ]
     if not citations:
-        meta["failure_reason"] = "no_results" if meta["total_candidates"] == 0 else "no_match"
+        if meta["total_candidates"] == 0:
+            meta["failure_reason"] = "no_results"
+        else:
+            meta["failure_reason"] = "below_threshold"
         return [], meta
     return citations, meta
 
