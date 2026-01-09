@@ -36,6 +36,13 @@ KOBERT_MODEL_ID = os.getenv("KOBERT_MODEL_ID", "skt/kobert-base-v1")
 MIN_CITATION_RANK = float(os.getenv("MIN_CITATION_RANK", "0.05"))
 MIN_CITATION_TRGM = float(os.getenv("MIN_CITATION_TRGM", str(TRGM_SIMILARITY_THRESHOLD)))
 MIN_CITATION_KEYWORD_HITS = int(os.getenv("MIN_CITATION_KEYWORD_HITS", "1"))
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+OPENAI_TIMEOUT_SEC = float(os.getenv("OPENAI_TIMEOUT_SEC", "30"))
+OPENAI_TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", "0.4"))
+OPENAI_MAX_TOKENS = int(os.getenv("OPENAI_MAX_TOKENS", "800"))
+OPENAI_CITATION_ENABLED = os.getenv("OPENAI_CITATION_ENABLED", "0") == "1"
 
 SUMMARY_MAX_CHARS = 800
 SUMMARY_TRIGGER_TURNS = 30
@@ -824,6 +831,59 @@ def generate_with_ollama(prompt: str) -> Optional[str]:
     return data.get("response") or None
 
 
+def _openai_available(api_key: str | None = None) -> bool:
+    key = api_key or OPENAI_API_KEY
+    return OPENAI_CITATION_ENABLED and bool(key)
+
+
+def openai_citation_enabled(api_key: str | None = None) -> bool:
+    return _openai_available(api_key)
+
+
+def generate_with_openai(prompt: str, api_key: str | None = None) -> Optional[str]:
+    key = api_key or OPENAI_API_KEY
+    if not key:
+        return None
+    url = f"{OPENAI_BASE_URL.rstrip('/')}/v1/chat/completions"
+    payload = {
+        "model": OPENAI_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": OPENAI_TEMPERATURE,
+        "max_tokens": OPENAI_MAX_TOKENS,
+    }
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+    start = time.perf_counter()
+    try:
+        res = requests.post(url, json=payload, headers=headers, timeout=OPENAI_TIMEOUT_SEC)
+        res.raise_for_status()
+        data = res.json()
+    except requests.RequestException:
+        _log_event(
+            "llm_error",
+            {"model": OPENAI_MODEL, "provider": "openai", "error": "request_failed"},
+        )
+        return None
+    elapsed_ms = int((time.perf_counter() - start) * 1000)
+    _log_event(
+        "llm_latency",
+        {"model": OPENAI_MODEL, "provider": "openai", "elapsed_ms": elapsed_ms},
+    )
+    if elapsed_ms > LLM_SLOW_MS:
+        _log_event(
+            "llm_slow",
+            {"model": OPENAI_MODEL, "provider": "openai", "elapsed_ms": elapsed_ms},
+        )
+    choices = data.get("choices") or []
+    if not choices:
+        return None
+    message = choices[0].get("message") or {}
+    content = message.get("content")
+    return content.strip() if isinstance(content, str) else None
+
+
 def _rerank_with_llm(context_text: str, candidates: List[dict]) -> Optional[List[dict]]:
     if not candidates:
         return None
@@ -974,7 +1034,12 @@ def summarize_messages(messages: List[dict], previous_summary: str) -> str:
 
 
 def build_assistant_message(
-    user_message: str, gating: dict, summary: str, recent_messages: List[dict]
+    user_message: str,
+    gating: dict,
+    summary: str,
+    recent_messages: List[dict],
+    use_openai_for_citations: bool = False,
+    openai_api_key: str | None = None,
 ) -> tuple[str, bool]:
     recent_text = "\n".join(f"{m['role']}: {m['content']}" for m in recent_messages)
     prompt = (
@@ -985,7 +1050,11 @@ def build_assistant_message(
         f"Gating: {gating}\n"
         f"User: {user_message}\n"
     )
-    response = generate_with_ollama(prompt)
+    response = None
+    if use_openai_for_citations and _openai_available(openai_api_key):
+        response = generate_with_openai(prompt, openai_api_key)
+    if not response:
+        response = generate_with_ollama(prompt)
     if response:
         return response.strip(), True
     return (

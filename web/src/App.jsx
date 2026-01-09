@@ -1,6 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:9000";
+const GOOGLE_OAUTH_ENABLED =
+  import.meta.env.VITE_GOOGLE_OAUTH_ENABLED === "1" ||
+  Boolean(import.meta.env.VITE_GOOGLE_CLIENT_ID);
 const TABS = ["Reader", "Search", "Chat", "Account"];
 const DEVICE_ID_KEY = "device_id";
 const getOrCreateDeviceId = () => {
@@ -285,6 +288,12 @@ export default function App() {
   const [settingsNotice, setSettingsNotice] = useState("");
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [serverStoreMessages, setServerStoreMessages] = useState(null);
+  const [openaiEnabled, setOpenaiEnabled] = useState(false);
+  const [openaiKeySet, setOpenaiKeySet] = useState(false);
+  const [openaiKeyInput, setOpenaiKeyInput] = useState("");
+  const [openaiSettingsError, setOpenaiSettingsError] = useState("");
+  const [openaiSettingsNotice, setOpenaiSettingsNotice] = useState("");
+  const [openaiSettingsLoading, setOpenaiSettingsLoading] = useState(false);
   const [chatMeta, setChatMeta] = useState(null);
   const [chatLimitReached, setChatLimitReached] = useState(false);
 
@@ -368,9 +377,7 @@ export default function App() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    if (!readLocal(PRIVACY_NOTICE_KEY)) {
-      setShowPrivacyNotice(true);
-    }
+    setShowPrivacyNotice(true);
   }, []);
 
   useEffect(() => {
@@ -415,6 +422,12 @@ export default function App() {
   useEffect(() => {
     if (!authToken) {
       setServerStoreMessages(null);
+      setOpenaiEnabled(false);
+      setOpenaiKeySet(false);
+      setOpenaiKeyInput("");
+      setOpenaiSettingsError("");
+      setOpenaiSettingsNotice("");
+      setOpenaiSettingsLoading(false);
       setChatMeta(null);
       setConversationId("");
       setChatMessages([]);
@@ -433,6 +446,8 @@ export default function App() {
         const data = await res.json();
         const storeValue = Boolean(data.store_messages);
         setServerStoreMessages(storeValue);
+        setOpenaiEnabled(Boolean(data.openai_citation_enabled));
+        setOpenaiKeySet(Boolean(data.openai_api_key_set));
         if (!chatStorageSynced && storeValue === chatStorageConsent) {
           setChatStorageSynced(true);
         }
@@ -847,7 +862,77 @@ export default function App() {
     setChatStorageSynced(true);
   };
 
+  const applyOpenaiSettings = async (nextEnabled, { apiKey } = {}) => {
+    if (!authToken) return;
+    setOpenaiSettingsError("");
+    setOpenaiSettingsNotice("");
+    setOpenaiSettingsLoading(true);
+    try {
+      const payload = {
+        openai_citation_enabled: Boolean(nextEnabled)
+      };
+      if (apiKey !== undefined) {
+        payload.openai_api_key = apiKey;
+      }
+      const res = await authFetch(`${API_BASE}/v1/users/me/settings`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) throw new Error(t("Failed to update settings.", "설정 변경 실패"));
+      const data = await res.json();
+      setOpenaiEnabled(Boolean(data.openai_citation_enabled));
+      setOpenaiKeySet(Boolean(data.openai_api_key_set));
+      if (apiKey !== undefined) {
+        setOpenaiKeyInput("");
+      }
+      setOpenaiSettingsNotice(
+        nextEnabled
+          ? t("OpenAI citations enabled.", "OpenAI 인용이 켜졌습니다.")
+          : t("OpenAI citations disabled.", "OpenAI 인용이 꺼졌습니다.")
+      );
+    } catch (err) {
+      setOpenaiSettingsError(String(err.message || err));
+    } finally {
+      setOpenaiSettingsLoading(false);
+    }
+  };
+
+  const requestOpenaiToggle = (nextEnabled) => {
+    if (!authToken) {
+      setOpenaiSettingsError(t("Sign in to change settings.", "로그인 후 설정할 수 있습니다."));
+      return;
+    }
+    if (nextEnabled && !openaiKeySet && !openaiKeyInput.trim()) {
+      setOpenaiSettingsError(
+        t("Please add an OpenAI API key first.", "OpenAI API 키를 먼저 입력하세요.")
+      );
+      return;
+    }
+    applyOpenaiSettings(nextEnabled, {
+      apiKey: openaiKeyInput.trim() ? openaiKeyInput.trim() : undefined
+    });
+  };
+
+  const saveOpenaiKey = () => {
+    const trimmed = openaiKeyInput.trim();
+    if (!trimmed) {
+      setOpenaiSettingsError(
+        t("Enter an OpenAI API key to save.", "저장할 OpenAI API 키를 입력하세요.")
+      );
+      return;
+    }
+    applyOpenaiSettings(openaiEnabled, { apiKey: trimmed });
+  };
+
+  const clearOpenaiKey = () => {
+    applyOpenaiSettings(false, { apiKey: "" });
+  };
+
   const startGoogleOauth = async () => {
+    if (!GOOGLE_OAUTH_ENABLED) return;
     if (typeof window === "undefined" || !crypto?.subtle) {
       setOauthError(
         t("OAuth is not supported in this browser.", "이 브라우저는 OAuth를 지원하지 않습니다.")
@@ -884,7 +969,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (!GOOGLE_OAUTH_ENABLED || typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
     const code = params.get("code");
     const state = params.get("state");
@@ -1706,7 +1791,7 @@ export default function App() {
           <div className="grid">
             <div className="controls">
               <h2>{t("Account", "계정")}</h2>
-              {!authToken && (
+              {!authToken && GOOGLE_OAUTH_ENABLED && (
                 <>
                   <button
                     className="primary"
@@ -1809,6 +1894,66 @@ export default function App() {
                           </button>
                         </div>
                       </div>
+                    )}
+                  </>
+                )}
+              </div>
+              <div className="settings-card">
+                <div className="settings-title">
+                  {t("OpenAI citations", "OpenAI 인용")}
+                </div>
+                {!authToken && (
+                  <div className="meta">
+                    {t(
+                      "Sign in to configure OpenAI citations.",
+                      "OpenAI 인용 설정은 로그인 후 변경할 수 있습니다."
+                    )}
+                  </div>
+                )}
+                {authToken && (
+                  <>
+                    <label className="toggle-row">
+                      <span>{t("Use OpenAI for citations", "인용 시 OpenAI 사용")}</span>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(openaiEnabled)}
+                        onChange={(e) => requestOpenaiToggle(e.target.checked)}
+                        disabled={openaiSettingsLoading}
+                      />
+                    </label>
+                    <div className="meta">
+                      {openaiKeySet
+                        ? t("API key saved.", "API 키가 저장되어 있습니다.")
+                        : t("No API key saved.", "저장된 API 키가 없습니다.")}
+                    </div>
+                    <label>
+                      {t("OpenAI API key", "OpenAI API 키")}
+                      <input
+                        type="password"
+                        value={openaiKeyInput}
+                        placeholder="sk-..."
+                        onChange={(e) => setOpenaiKeyInput(e.target.value)}
+                      />
+                    </label>
+                    <div className="notice-actions">
+                      <button
+                        className="primary"
+                        onClick={saveOpenaiKey}
+                        disabled={openaiSettingsLoading || !openaiKeyInput.trim()}
+                      >
+                        {t("Save key", "키 저장")}
+                      </button>
+                      <button
+                        className="ghost"
+                        onClick={clearOpenaiKey}
+                        disabled={openaiSettingsLoading || !openaiKeySet}
+                      >
+                        {t("Clear key", "키 삭제")}
+                      </button>
+                    </div>
+                    {openaiSettingsError && <div className="error">{openaiSettingsError}</div>}
+                    {openaiSettingsNotice && (
+                      <div className="meta">{openaiSettingsNotice}</div>
                     )}
                   </>
                 )}

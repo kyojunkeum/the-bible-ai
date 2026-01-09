@@ -228,11 +228,15 @@ class AuthMeResponse(BaseModel):
 
 class UserSettingsResponse(BaseModel):
     store_messages: bool
+    openai_citation_enabled: bool = False
+    openai_api_key_set: bool = False
     updated_at: str | None = None
 
 
 class UserSettingsUpdateRequest(BaseModel):
-    store_messages: bool
+    store_messages: Optional[bool] = None
+    openai_citation_enabled: Optional[bool] = None
+    openai_api_key: Optional[str] = None
 
 
 class OAuthStartRequest(BaseModel):

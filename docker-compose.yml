@@ -13,6 +13,8 @@ services:
       AUTH_PEPPER: c1CMQ0_gBnD6pBIIurIkKE5dTxVuS0YNIAY06DTb18o
       AUTH_CAPTCHA_BYPASS: 8kzG3908GpxBUf-fMBhyQzNJ5OjSJBLi
       REDIS_URL: redis://redis:6379/0
+      OPENAI_CITATION_ENABLED: "1"
+      OPENAI_KEY_ENCRYPTION_SECRET: change-me
     ports:
       - "9000:9000"
     volumes:

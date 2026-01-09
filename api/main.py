@@ -763,6 +763,8 @@ def get_user_settings_api(current_user=Depends(require_user), conn=Depends(get_c
     updated_at = settings.get("updated_at")
     return {
         "store_messages": bool(settings.get("store_messages")),
+        "openai_citation_enabled": bool(settings.get("openai_citation_enabled")),
+        "openai_api_key_set": bool(settings.get("openai_api_key")),
         "updated_at": updated_at.isoformat() if updated_at else None,
     }
 
@@ -773,11 +775,19 @@ def update_user_settings_api(
     current_user=Depends(require_user),
     conn=Depends(get_conn),
 ):
-    settings = update_user_settings(conn, current_user["user_id"], payload.store_messages)
+    settings = update_user_settings(
+        conn,
+        current_user["user_id"],
+        payload.store_messages,
+        payload.openai_citation_enabled,
+        payload.openai_api_key,
+    )
     conn.commit()
     updated_at = settings.get("updated_at")
     return {
         "store_messages": bool(settings.get("store_messages")),
+        "openai_citation_enabled": bool(settings.get("openai_citation_enabled")),
+        "openai_api_key_set": bool(settings.get("openai_api_key")),
         "updated_at": updated_at.isoformat() if updated_at else None,
     }
 
@@ -1360,8 +1370,20 @@ def post_message(
 
     recent_messages = record["messages"][-RECENT_TURNS:]
     gating = gate_need_verse(sanitized_message, summary, recent_messages)
+    use_openai_for_citations = False
+    openai_api_key = None
+    if gating.get("need_verse") and record.get("user_id"):
+        user_settings = get_user_settings(conn, record["user_id"], include_secrets=True)
+        openai_api_key = user_settings.get("openai_api_key")
+        if user_settings.get("openai_citation_enabled") and openai_api_key:
+            use_openai_for_citations = True
     assistant_message, llm_ok = build_assistant_message(
-        sanitized_message, gating, summary, recent_messages
+        sanitized_message,
+        gating,
+        summary,
+        recent_messages,
+        use_openai_for_citations=use_openai_for_citations,
+        openai_api_key=openai_api_key,
     )
     gating["llm_ok"] = llm_ok
     if not llm_ok:

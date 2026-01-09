@@ -1,4 +1,4 @@
-## 📘 TheBibleAI
+## 📘 TheBibleAI (서비스명: 평안)
 Bible Text ETL & Citation-Safe AI Foundation
 
 TheBibleAI는 성경전서 개역한글판(KRV) 과 WEB(World English Bible Classic) 본문을 합법적 허락 범위 내에서 수집·정규화·검증하여 DB 정본(Source of Truth)으로 구축하고,
@@ -64,7 +64,12 @@ Web / Mobile은 UI 전용
 | Web / App  | 입력·표시(UI)       |
 | API Server | 검색·인용·상담·AI 판단  |
 | DB         | 성경 정본 및 메타      |
+| Redis      | 상담 세션 메타/TTL/일일 제한 |
 | Ollama     | LLM / Embedding |
+
+4. 서버가 최종 집행자
+
+프론트가 보내는 토글/플래그는 참고만 하며, 저장 여부·턴 제한·만료는 서버가 최종 강제
 
 
 장(Chapter) 단위 수집
@@ -102,6 +107,13 @@ TheBibleAI/
 └─ README.md
 ```
 
+## ✅ 상담/저장 정책 요약
+- 익명 체험: store_messages는 항상 false 강제 (프론트 값 무시)
+- 로그인 사용자: user_settings.store_messages 기준으로 저장 여부 결정
+- 상담 세션: Redis에서 TTL/턴 제한/턴 카운트 관리
+- 익명 일일 제한: KST 기준으로 device_id (없으면 IP) 단위로 일일 턴 제한
+- 응답 메타에 남은 턴/일일 제한 정보 포함
+
 
 ## 데이터베이스 개요
 주요 테이블
@@ -115,6 +127,10 @@ bible_verse : 절 단위 본문 (정본)
 bible_chapter_hash : 장 단위 무결성 해시
 
 bible_verse_window : Vector 검색용 윈도우 인덱스
+
+user_settings : 대화 저장 설정 (서버 강제)
+
+oauth_account / auth_refresh_token : Google OAuth 및 JWT 리프레시 토큰 관리
 
 정본 원칙
 
@@ -135,6 +151,19 @@ Python: 3.12
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+
+## 🐳 Docker 빠른 시작
+docker compose up -d --build
+
+이미 생성된 DB에 OAuth 테이블을 추가해야 하는 경우:
+docker compose exec postgres psql -U bible -d bible_app -f /docker-entrypoint-initdb.d/90_oauth_schema.sql
+
+이미 생성된 DB에 OpenAI 설정 컬럼을 추가해야 하는 경우:
+docker compose exec postgres psql -U bible -d bible_app -f /docker-entrypoint-initdb.d/75_user_settings_llm.sql
+
+## 🌐 Web / 📱 Mobile 실행
+- Web: `cd web && npm install && npm run dev`
+- Mobile(Expo): `cd mobile && npm install && npm run start`
 
 ## 🚚 ETL 실행 방법
 
@@ -191,6 +220,12 @@ GROUP BY testament;
 
 pgvector 기반 의미 검색
 
+인증/설정
+- JWT access/refresh 기반 인증 (웹/앱 공용)
+- Google OAuth PKCE 로그인 (start/exchange)
+- 사용자 설정 저장/조회 (store_messages)
+- 사용자별 OpenAI API 연동 (openai_citation_enabled + api_key)
+
 ## 상담 챗 (핵심)
 
 대화 상태 관리 + 요약
@@ -204,6 +239,55 @@ pgvector 기반 의미 검색
 인용 텍스트 DB 원문 1:1 검증
 
 AI는 “언제, 왜, 어떤 구절을 인용했는지” 항상 설명 가능
+
+익명 체험 제한
+- TTL 및 턴 제한(서버/Redis 관리)
+- KST 기준 일일 턴 제한
+
+## 🔐 인증 & OAuth (JWT + PKCE)
+- JWT access/refresh 토큰 발급
+- refresh 시 기존 refresh 토큰 폐기 후 재발급
+- Google OAuth는 PKCE 방식 (client_secret 없이 동작 가능)
+- 리다이렉트 예시
+  - Web: `https://<YOUR_WEB_DOMAIN>` (현재 웹 앱의 origin)
+  - Mobile: `thebibleai://oauth/google`
+
+## 🤖 OpenAI 연동 (사용자별 BYOK)
+- 기본 상담은 로컬 LLM(Ollama) 사용
+- 사용자 설정에서 `openai_citation_enabled=true`일 때, **성경 인용이 필요한 경우에만** OpenAI 사용
+- OpenAI 실패 시 로컬 LLM로 자동 폴백
+- 서버 전역 스위치 `OPENAI_CITATION_ENABLED=1`이 켜져 있어야 동작
+- 인용 필요성 판단/요약은 로컬 LLM 기준
+
+설정 예시 (로그인 필요):
+- `PATCH /v1/users/me/settings`
+```json
+{
+  "openai_citation_enabled": true,
+  "openai_api_key": "sk-..."
+}
+```
+
+LLM Gateway 사용 시:
+- `OPENAI_BASE_URL`을 Gateway 엔드포인트로 설정
+
+키 삭제:
+```json
+{
+  "openai_api_key": ""
+}
+```
+
+## ⚙️ 주요 환경 변수
+- `OLLAMA_URL`, `OLLAMA_MODEL`, `OLLAMA_TIMEOUT_SEC`
+- `REDIS_URL`
+- `ANON_CHAT_TTL_SEC`, `ANON_CHAT_TURN_LIMIT`, `ANON_DAILY_TURN_LIMIT`
+- `JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE`, `JWT_ACCESS_TTL_SEC`, `JWT_REFRESH_TTL_SEC`
+- `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` (선택, 없으면 OAuth 비활성)
+- `OPENAI_CITATION_ENABLED`, `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_TIMEOUT_SEC`, `OPENAI_BASE_URL`
+- `OPENAI_KEY_ENCRYPTION_SECRET` (설정 시 DB에 저장되는 사용자 키를 암호화, 미설정 시 평문 저장)
+- `KOBERT_MODEL_ID`, `RERANK_CANDIDATES`, `RERANK_TOP_N`
+- `VECTOR_ENABLED`, `VECTOR_WINDOW_SIZE`
 
 ## 🔮 향후 확장 계획
 
@@ -224,7 +308,7 @@ OLLAMA_EMBED_MODEL
 
 VECTOR_ENABLED=1
 
-RERANK_MODE=llm | ko-bert | off
+RERANK_MODE는 현재 ko-bert 고정(환경변수로 변경하지 않음)
 
 ## 📜 라이선스 및 고지
 

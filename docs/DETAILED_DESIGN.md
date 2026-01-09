@@ -16,9 +16,11 @@
 
 ### 1.1 논리 아키텍처(핵심 컴포넌트)
 
-- Mobile App (Flutter / RN)
+- Mobile App (React Native + Expo)
   - Bible Reader UI, Search UI, Chat UI
-  - 로컬 캐시(장 단위), 북마크/메모 로컬 저장
+  - 로컬 캐시(장 단위), 로그인 사용자만 북마크/메모 사용
+- Web App (React + Vite)
+  - Reader/Search/Chat/Account UI
 - Backend API (FastAPI 권장)
   - Bible API(조회/검색)
   - Chat Orchestrator(세션, 메모리, 안전/정책)
@@ -26,17 +28,21 @@
 - Bible DB (PostgreSQL + FTS)
   - verse 단위 저장, 장 단위 해시
   - 검색 인덱스(FTS + 부분일치)
+- Redis
+  - 상담 세션 메타(TTL/턴/일일 제한)
 - Conversation Store
-  - 기본: 서버 저장 최소화(옵션화)
-  - 운영/품질 개선용으로 익명화 로그 최소 저장(옵션)
+  - store_messages=true인 경우에만 DB 저장
+  - 익명은 서버 저장 비활성(강제)
 - LLM Gateway
-  - 외부 LLM API 호출, 프롬프트 템플릿/정책 적용
-  - 장애 시 degrade 모드(인용 없이 대화, 혹은 상담 제한)
+  - OpenAI 또는 외부 Gateway 연동(선택)
+  - 기본 상담은 로컬 LLM 사용, 인용 필요 시에만 외부 LLM 사용 가능
+  - 장애 시 degrade 모드(인용 없이 대화)
+  - Gateway 사용 시 OPENAI_BASE_URL로 엔드포인트 지정
 
 ### 1.2 물리 배포(권장)
 
 - 단일 VPC/클라우드 또는 온프레미스
-  - api (FastAPI) + postgres + redis(선택) + observability(선택)
+  - api (FastAPI) + postgres + redis(권장) + ollama + observability(선택)
 - 확장:
   - 검색 부하 증가 시: OpenSearch 교체 가능 구조(비기능 요구사항 반영)
 
@@ -89,6 +95,19 @@
 - 주의:
   - unaccent 확장은 설치되어 있으나, 기본 검색 파이프라인에는 적용하지 않음(필요 시 별도 설계)
 
+### 2.1.6 사용자/인증 설정
+
+- user_settings
+  - user_id (PK)
+  - store_messages (boolean)
+  - openai_citation_enabled (boolean)
+  - openai_api_key (text, 선택, 암호화 가능)
+  - updated_at
+- oauth_account
+  - provider, provider_user_id, user_id, email, name, picture
+- auth_refresh_token
+  - refresh_token_id, user_id, expires_at, revoked_at, device_id
+
 ---
 
 ## 2.2 사용자 로컬 저장(앱)
@@ -108,22 +127,18 @@
 
 - 북마크: (version_id, book_id, chapter, verse)
 - 메모: 동일 키 + memo_text, created_at
-- 기본은 로컬만(요구사항 FR-042)
-- 서버 저장은 옵션(디바이스 ID 기반)으로 제공 가능
-- 확장: 계정 도입 시 동기화 옵션
+- 로그인 사용자만 서버 저장(계정 단위)
+- 익명 사용자는 북마크/메모 기능 비활성
 
 ---
 
 ## 2.3 상담 데이터(서버 저장 최소화)
 
-권장 2단계 설계:
-
-- MVP 기본값: 서버 저장 최소/비식별
-  - conversation_id만 서버에서 발급
-  - 대화 전문 저장은 사용자 선택(Opt-in)
-- 품질 개선/안전 로그(최소 저장)
+- 기본: 익명은 store_messages=false 강제, 서버에 대화 저장하지 않음
+- 로그인 사용자만 user_settings.store_messages=true일 때 저장
+- 품질/안전 로그(최소 저장)
   - 구절 인용 이벤트(어떤 구절이 어떤 시점에 사용되었는지)
-  - LLM 호출 성공/실패, 지연시간, 토큰 사용량
+  - LLM 호출 성공/실패, 지연시간
   - 사용자 메시지 전문은 기본 저장하지 않음(가능하면)
 
 ---
@@ -245,8 +260,13 @@
 ### 3.2.1 세션 생성
 
 - POST /v1/chat/conversations
-  - 요청: { device_id?, locale, version_id="krv" }
-  - 응답: { conversation_id, created_at }
+  - 요청: { device_id?, locale, version_id="krv", store_messages? }
+  - 응답:
+    - conversation_id, created_at
+    - mode (anonymous | authenticated)
+    - store_messages (서버 최종 강제값)
+    - expires_at, turn_limit, turn_count, remaining_turns
+    - daily_turn_limit, daily_turn_count, daily_remaining (익명만)
 
 ### 3.2.2 메시지 전송(핵심)
 
@@ -275,6 +295,9 @@
       "memory":{"mode":"recent+summary","recent_turns":8}
     }
     ```
+  - 오류:
+    - 410: 세션 만료
+    - 429: 체험 턴 종료 또는 일일 제한 초과(익명)
 
 ### 3.2.3 대화 기록(옵션)
 
@@ -282,7 +305,27 @@
 - DELETE /v1/chat/conversations/{conversation_id}
   - 삭제 가능 요구사항 반영(서버 저장이 있는 경우에만 실질 의미)
 
+### 3.2.4 저장/제한 정책(서버 강제)
+
+- 익명: store_messages=false 강제, TTL/턴 제한 적용
+- 로그인: user_settings.store_messages 기준으로 저장 여부 결정
+- 익명 일일 제한: KST 기준 device_id 우선, 없으면 IP
+- Redis가 TTL/턴 카운트/일일 제한 카운트를 관리
+
 ---
+
+## 3.3 Auth / Settings API
+
+- POST /v1/auth/register, /v1/auth/login
+  - JWT access/refresh 발급
+- POST /v1/auth/refresh
+  - refresh 토큰 회전(기존 토큰 폐기 후 재발급)
+- POST /v1/auth/oauth/google/start, /v1/auth/oauth/google/exchange
+  - PKCE 기반 Google OAuth
+- GET /v1/users/me/settings
+  - store_messages, openai_citation_enabled, openai_api_key_set
+- PATCH /v1/users/me/settings
+  - store_messages, openai_citation_enabled, openai_api_key 업데이트
 
 ## 4. AI 상담 동작 설계(가장 중요한 부분)
 
@@ -305,8 +348,8 @@ Step B. 메모리 구성
 
 Step C. 구절 인용 필요성 판단(Gating)
 
-- LLM에 바로 생성시키지 말고, 먼저 인용이 필요한지/어떤 주제인지 분류 프롬프트로 판단
-- 출력: { need_verse: true/false, topics:[...], emotions:[...], risk_flags:[...] }
+- 로컬 LLM(Ollama)로 인용 필요성/주제를 판단
+- 출력: { need_verse: true/false, topics:[...], user_goal:"", risk_flags:[...] }
 - 룰 기반 보정: 명시적 요청/강한 감정/정리 국면이면 인용 시도, 정보성 질문/잡담이면 인용 제외
 
 Step D. 구절 검색(Retrieval)
@@ -317,10 +360,10 @@ Step D. 구절 검색(Retrieval)
   2. 토픽 기반: 불안/두려움/관계/상실/죄책감 등 → 주제 사전(룰)
   3. 동의어 확장: `search_synonym` 테이블 또는 룰 기반 확장
   4. FTS 상위 K개(예: 20개) 가져오기
-  5. Vector 후보: `bible_verse_window`에서 임베딩 검색 TopK
-  6. Rerank(LLM 또는 Ko-BERT): 지금 상황에 위로/방향성이 있는가
+  5. Vector 후보: FTS 결과가 있을 때만 `bible_verse_window`에서 임베딩 검색 TopK
+  6. Rerank: KoBERT 기반(현재 강제, 실패 시 원본 순서 유지)
 - Vector 인덱스는 3~7절 윈도우(기본 5절) 슬라이딩으로 생성
-- 리랭커 모드: `RERANK_MODE=llm|ko-bert|off` (ko-bert는 별도 모델/의존성 필요)
+- 리랭커 모드: 기본 ko-bert (LLM 리랭크는 비활성)
 
 Step E. 구절 포함 응답 생성(Grounded Generation)
 
@@ -328,6 +371,8 @@ Step E. 구절 포함 응답 생성(Grounded Generation)
   - 선택된 구절 원문(절/본문)
   - 인용 규칙(절대로 없는 구절 만들지 마라)
   - 대화 톤(공감→질문→정리→선택적 말씀→실행 가능한 작은 제안)
+- 인용이 필요한 경우에만 OpenAI(사용자 키)로 생성 가능
+- 기본 상담은 로컬 LLM 사용, OpenAI 실패 시 로컬 폴백
 
 Step F. 후처리 검증(필수)
 
@@ -337,7 +382,10 @@ Step F. 후처리 검증(필수)
 
 Step G. 사용자 직접 인용 요청 처리(LLM 판단 최소화)
 
-- 사용자 입력에 명시적 구절 요청이 포함되면(예: "창1:1", "창세기 1장 1절", "GEN 1:1"):\n  - LLM이 직접 book/chapter/verse를 생성하지 않는다\n  - 서버의 ref 파서가 입력을 정규화하고 DB로 검증 후 조회한다\n+- 흐름: 사용자 입력 -> ref 파서 -> DB 조회 -> 응답 반환
+- 사용자 입력에 명시적 구절 요청이 포함되면(예: "창1:1", "창세기 1장 1절", "GEN 1:1"):
+  - LLM이 직접 book/chapter/verse를 생성하지 않는다
+  - 서버의 ref 파서가 입력을 정규화하고 DB로 검증 후 조회한다
+- 흐름: 사용자 입력 -> ref 파서 -> DB 조회 -> 응답 반환
 
 ---
 
@@ -402,7 +450,8 @@ Step G. 사용자 직접 인용 요청 처리(LLM 판단 최소화)
 ### 6.2 안정성(장애 모드)
 
 - LLM 장애:
-  - 상담 제한 모드: 공감/정리/질문만 제공(구절 인용 OFF)
+  - OpenAI 실패 시 로컬 LLM로 자동 폴백
+  - 로컬 LLM 실패 시: 공감/정리/질문만 제공(구절 인용 OFF)
   - 사용자에게 현재 상담 기능이 원활하지 않음 안내
 - DB 장애:
   - 캐시된 장은 계속 읽기 가능
@@ -415,6 +464,8 @@ Step G. 사용자 직접 인용 요청 처리(LLM 판단 최소화)
   - 기본: 대화 전문 저장 X
   - 로그는 익명화/집계 중심
 - 대화 삭제는 서버 저장을 켠 사용자에게만 실효성 있음(정책 문구에 명확히)
+- OpenAI API 키는 사용자 설정에 저장되며, `OPENAI_KEY_ENCRYPTION_SECRET` 설정 시 암호화 저장
+- OpenAI 호출은 인용 필요 상황에서만 발생하도록 제한
 
 ---
 

@@ -18,6 +18,9 @@ import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import * as Crypto from "expo-crypto";
 
 const API_BASE = process.env.EXPO_PUBLIC_API_BASE || "http://localhost:9000";
+const GOOGLE_OAUTH_ENABLED =
+  process.env.EXPO_PUBLIC_GOOGLE_OAUTH_ENABLED === "1" ||
+  Boolean(process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID);
 const VERSE_FONT_SIZE_KEY = "bible:verse_font_size";
 const SPLASH_DURATION_MS = 5000;
 const SPLASH_MESSAGE_KO =
@@ -258,6 +261,12 @@ export default function App() {
   const [settingsNotice, setSettingsNotice] = useState("");
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [serverStoreMessages, setServerStoreMessages] = useState(null);
+  const [openaiEnabled, setOpenaiEnabled] = useState(false);
+  const [openaiKeySet, setOpenaiKeySet] = useState(false);
+  const [openaiKeyInput, setOpenaiKeyInput] = useState("");
+  const [openaiSettingsError, setOpenaiSettingsError] = useState("");
+  const [openaiSettingsNotice, setOpenaiSettingsNotice] = useState("");
+  const [openaiSettingsLoading, setOpenaiSettingsLoading] = useState(false);
   const [chatMeta, setChatMeta] = useState(null);
   const [chatLimitReached, setChatLimitReached] = useState(false);
 
@@ -433,10 +442,7 @@ export default function App() {
           setUiLang(normalizeUiLang(savedUiLang ?? deviceLocale));
         }
 
-        const privacySeen = await AsyncStorage.getItem(STORAGE_KEYS.privacyNotice);
-        if (!privacySeen) {
-          setShowPrivacyNotice(true);
-        }
+        setShowPrivacyNotice(true);
         const savedConsent = await AsyncStorage.getItem(STORAGE_KEYS.chatStorageConsent);
         if (savedConsent !== null) {
           setChatStorageConsent(savedConsent === "true");
@@ -525,6 +531,12 @@ export default function App() {
   useEffect(() => {
     if (!authToken) {
       setServerStoreMessages(null);
+      setOpenaiEnabled(false);
+      setOpenaiKeySet(false);
+      setOpenaiKeyInput("");
+      setOpenaiSettingsError("");
+      setOpenaiSettingsNotice("");
+      setOpenaiSettingsLoading(false);
       setChatMeta(null);
       setConversationId("");
       setChatMessages([]);
@@ -543,6 +555,8 @@ export default function App() {
         const data = await res.json();
         const storeValue = Boolean(data.store_messages);
         setServerStoreMessages(storeValue);
+        setOpenaiEnabled(Boolean(data.openai_citation_enabled));
+        setOpenaiKeySet(Boolean(data.openai_api_key_set));
         if (!chatStorageSynced && storeValue === chatStorageConsent) {
           setChatStorageSynced(true);
         }
@@ -867,6 +881,7 @@ export default function App() {
   };
 
   const startGoogleOauth = async () => {
+    if (!GOOGLE_OAUTH_ENABLED) return;
     setOauthError("");
     setOauthLoading(true);
     try {
@@ -898,7 +913,7 @@ export default function App() {
   };
 
   const handleOauthUrl = async (url) => {
-    if (!url || !url.startsWith(`${OAUTH_REDIRECT_SCHEME}://`)) return;
+    if (!GOOGLE_OAUTH_ENABLED || !url || !url.startsWith(`${OAUTH_REDIRECT_SCHEME}://`)) return;
     const query = url.split("?")[1] || "";
     if (!query) return;
     const params = new URLSearchParams(query);
@@ -956,6 +971,7 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (!GOOGLE_OAUTH_ENABLED) return;
     let active = true;
     const handleIncomingUrl = (incomingUrl) => {
       if (!incomingUrl) return;
@@ -1184,6 +1200,75 @@ export default function App() {
 
   const dismissSyncPrompt = () => {
     setChatStorageSynced(true);
+  };
+
+  const applyOpenaiSettings = async (nextEnabled, { apiKey } = {}) => {
+    if (!authToken) return;
+    setOpenaiSettingsError("");
+    setOpenaiSettingsNotice("");
+    setOpenaiSettingsLoading(true);
+    try {
+      const payload = {
+        openai_citation_enabled: Boolean(nextEnabled)
+      };
+      if (apiKey !== undefined) {
+        payload.openai_api_key = apiKey;
+      }
+      const res = await authFetch(`${API_BASE}/v1/users/me/settings`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) throw new Error(t("Failed to update settings.", "설정 변경 실패"));
+      const data = await res.json();
+      setOpenaiEnabled(Boolean(data.openai_citation_enabled));
+      setOpenaiKeySet(Boolean(data.openai_api_key_set));
+      if (apiKey !== undefined) {
+        setOpenaiKeyInput("");
+      }
+      setOpenaiSettingsNotice(
+        nextEnabled
+          ? t("OpenAI citations enabled.", "OpenAI 인용이 켜졌습니다.")
+          : t("OpenAI citations disabled.", "OpenAI 인용이 꺼졌습니다.")
+      );
+    } catch (err) {
+      setOpenaiSettingsError(String(err.message || err));
+    } finally {
+      setOpenaiSettingsLoading(false);
+    }
+  };
+
+  const requestOpenaiToggle = (nextEnabled) => {
+    if (!authToken) {
+      setOpenaiSettingsError(t("Sign in to change settings.", "로그인 후 설정할 수 있습니다."));
+      return;
+    }
+    if (nextEnabled && !openaiKeySet && !openaiKeyInput.trim()) {
+      setOpenaiSettingsError(
+        t("Please add an OpenAI API key first.", "OpenAI API 키를 먼저 입력하세요.")
+      );
+      return;
+    }
+    applyOpenaiSettings(nextEnabled, {
+      apiKey: openaiKeyInput.trim() ? openaiKeyInput.trim() : undefined
+    });
+  };
+
+  const saveOpenaiKey = () => {
+    const trimmed = openaiKeyInput.trim();
+    if (!trimmed) {
+      setOpenaiSettingsError(
+        t("Enter an OpenAI API key to save.", "저장할 OpenAI API 키를 입력하세요.")
+      );
+      return;
+    }
+    applyOpenaiSettings(openaiEnabled, { apiKey: trimmed });
+  };
+
+  const clearOpenaiKey = () => {
+    applyOpenaiSettings(false, { apiKey: "" });
   };
 
   const toggleBookmark = async (bookId, verse) => {
@@ -1859,6 +1944,66 @@ export default function App() {
                 </View>
 
                 <View style={styles.card}>
+                  <Text style={styles.label}>{t("OpenAI citations", "OpenAI 인용")}</Text>
+                  {!authToken ? (
+                    <Text style={styles.meta}>
+                      {t(
+                        "Sign in to configure OpenAI citations.",
+                        "OpenAI 인용 설정은 로그인 후 변경할 수 있습니다."
+                      )}
+                    </Text>
+                  ) : (
+                    <>
+                      <View style={styles.toggleRow}>
+                        <Text style={styles.settingValue}>
+                          {t("Use OpenAI for citations", "인용 시 OpenAI 사용")}
+                        </Text>
+                        <Switch
+                          value={Boolean(openaiEnabled)}
+                          onValueChange={(value) => requestOpenaiToggle(value)}
+                          disabled={openaiSettingsLoading}
+                        />
+                      </View>
+                      <Text style={styles.meta}>
+                        {openaiKeySet
+                          ? t("API key saved.", "API 키가 저장되어 있습니다.")
+                          : t("No API key saved.", "저장된 API 키가 없습니다.")}
+                      </Text>
+                      <TextInput
+                        style={styles.input}
+                        placeholder="sk-..."
+                        value={openaiKeyInput}
+                        onChangeText={setOpenaiKeyInput}
+                        autoCapitalize="none"
+                        secureTextEntry
+                      />
+                      <View style={styles.noticeActions}>
+                        <TouchableOpacity
+                          style={[styles.primary, openaiSettingsLoading && styles.primaryDisabled]}
+                          onPress={saveOpenaiKey}
+                          disabled={openaiSettingsLoading || !openaiKeyInput.trim()}
+                        >
+                          <Text style={styles.primaryText}>{t("Save key", "키 저장")}</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.secondary, openaiSettingsLoading && styles.primaryDisabled]}
+                          onPress={clearOpenaiKey}
+                          disabled={openaiSettingsLoading || !openaiKeySet}
+                        >
+                          <Text style={styles.secondaryText}>{t("Clear key", "키 삭제")}</Text>
+                        </TouchableOpacity>
+                      </View>
+                      {openaiSettingsError ? (
+                        <Text style={styles.error}>{openaiSettingsError}</Text>
+                      ) : null}
+                      {openaiSettingsNotice ? (
+                        <Text style={styles.meta}>{openaiSettingsNotice}</Text>
+                      ) : null}
+                    </>
+                  )}
+                </View>
+
+                <View style={styles.card}>
                   <Text style={styles.label}>{t("Account", "계정")}</Text>
                   {authToken ? (
                     <View style={styles.accountInfo}>
@@ -1875,18 +2020,22 @@ export default function App() {
                   ) : (
 
                     <View style={styles.accountForm}>
-                      <TouchableOpacity
-                        style={[styles.primary, oauthLoading && styles.primaryDisabled]}
-                        onPress={startGoogleOauth}
-                        disabled={oauthLoading}
-                      >
-                        <Text style={styles.primaryText}>
-                          {oauthLoading
-                            ? t("Connecting to Google...", "구글 로그인 연결 중...")
-                            : t("Continue with Google", "Google로 계속하기")}
-                        </Text>
-                      </TouchableOpacity>
-                      {oauthError ? <Text style={styles.error}>{oauthError}</Text> : null}
+                      {GOOGLE_OAUTH_ENABLED && (
+                        <>
+                          <TouchableOpacity
+                            style={[styles.primary, oauthLoading && styles.primaryDisabled]}
+                            onPress={startGoogleOauth}
+                            disabled={oauthLoading}
+                          >
+                            <Text style={styles.primaryText}>
+                              {oauthLoading
+                                ? t("Connecting to Google...", "구글 로그인 연결 중...")
+                                : t("Continue with Google", "Google로 계속하기")}
+                            </Text>
+                          </TouchableOpacity>
+                          {oauthError ? <Text style={styles.error}>{oauthError}</Text> : null}
+                        </>
+                      )}
                       <TextInput
                         style={styles.input}
                         placeholder="you@example.com"
