@@ -35,9 +35,10 @@
   - 익명은 서버 저장 비활성(강제)
 - LLM Gateway
   - OpenAI 또는 외부 Gateway 연동(선택)
-  - 기본 상담은 로컬 LLM 사용, 인용 필요 시에만 외부 LLM 사용 가능
+  - 기본 상담은 로컬 LLM 사용, OpenAI 활성화 시 상담 관련 LLM 호출은 OpenAI 사용
   - 장애 시 degrade 모드(인용 없이 대화)
   - Gateway 사용 시 OPENAI_BASE_URL로 엔드포인트 지정
+  - OpenAI API 키는 OpenAI 또는 OpenAI 호환 Gateway에서만 유효 (타 제공자는 별도 연동 필요)
 
 ### 1.2 물리 배포(권장)
 
@@ -348,7 +349,7 @@ Step B. 메모리 구성
 
 Step C. 구절 인용 필요성 판단(Gating)
 
-- 로컬 LLM(Ollama)로 인용 필요성/주제를 판단
+- 인용 필요성/주제 판단은 OpenAI 활성화 시 OpenAI, 아니면 로컬 LLM(Ollama)
 - 출력: { need_verse: true/false, topics:[...], user_goal:"", risk_flags:[...] }
 - 룰 기반 보정: 명시적 요청/강한 감정/정리 국면이면 인용 시도, 정보성 질문/잡담이면 인용 제외
 
@@ -371,8 +372,8 @@ Step E. 구절 포함 응답 생성(Grounded Generation)
   - 선택된 구절 원문(절/본문)
   - 인용 규칙(절대로 없는 구절 만들지 마라)
   - 대화 톤(공감→질문→정리→선택적 말씀→실행 가능한 작은 제안)
-- 인용이 필요한 경우에만 OpenAI(사용자 키)로 생성 가능
-- 기본 상담은 로컬 LLM 사용, OpenAI 실패 시 로컬 폴백
+- OpenAI 활성화 시 상담 관련 LLM 호출은 OpenAI(사용자 키)로 수행
+- OpenAI 실패 시 로컬 LLM로 폴백
 
 Step F. 후처리 검증(필수)
 
@@ -465,7 +466,8 @@ Step G. 사용자 직접 인용 요청 처리(LLM 판단 최소화)
   - 로그는 익명화/집계 중심
 - 대화 삭제는 서버 저장을 켠 사용자에게만 실효성 있음(정책 문구에 명확히)
 - OpenAI API 키는 사용자 설정에 저장되며, `OPENAI_KEY_ENCRYPTION_SECRET` 설정 시 암호화 저장
-- OpenAI 호출은 인용 필요 상황에서만 발생하도록 제한
+- OpenAI 활성화 시 상담 관련 LLM 호출에 사용
+- OpenAI API 키는 OpenAI/OpenAI 호환 Gateway 전용
 
 ---
 

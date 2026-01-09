@@ -1230,8 +1230,8 @@ export default function App() {
       }
       setOpenaiSettingsNotice(
         nextEnabled
-          ? t("OpenAI citations enabled.", "OpenAI 인용이 켜졌습니다.")
-          : t("OpenAI citations disabled.", "OpenAI 인용이 꺼졌습니다.")
+          ? t("OpenAI chat enabled.", "OpenAI 상담이 켜졌습니다.")
+          : t("OpenAI chat disabled.", "OpenAI 상담이 꺼졌습니다.")
       );
     } catch (err) {
       setOpenaiSettingsError(String(err.message || err));
@@ -1944,19 +1944,19 @@ export default function App() {
                 </View>
 
                 <View style={styles.card}>
-                  <Text style={styles.label}>{t("OpenAI citations", "OpenAI 인용")}</Text>
+                  <Text style={styles.label}>{t("OpenAI chat", "OpenAI 상담")}</Text>
                   {!authToken ? (
                     <Text style={styles.meta}>
                       {t(
-                        "Sign in to configure OpenAI citations.",
-                        "OpenAI 인용 설정은 로그인 후 변경할 수 있습니다."
+                        "Sign in to configure OpenAI chat.",
+                        "OpenAI 상담 설정은 로그인 후 변경할 수 있습니다."
                       )}
                     </Text>
                   ) : (
                     <>
                       <View style={styles.toggleRow}>
                         <Text style={styles.settingValue}>
-                          {t("Use OpenAI for citations", "인용 시 OpenAI 사용")}
+                          {t("Use OpenAI for counseling", "상담 시 OpenAI 사용")}
                         </Text>
                         <Switch
                           value={Boolean(openaiEnabled)}

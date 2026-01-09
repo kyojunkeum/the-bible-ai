@@ -840,6 +840,10 @@ def openai_citation_enabled(api_key: str | None = None) -> bool:
     return _openai_available(api_key)
 
 
+def openai_llm_enabled(api_key: str | None = None) -> bool:
+    return _openai_available(api_key)
+
+
 def generate_with_openai(prompt: str, api_key: str | None = None) -> Optional[str]:
     key = api_key or OPENAI_API_KEY
     if not key:
@@ -884,7 +888,24 @@ def generate_with_openai(prompt: str, api_key: str | None = None) -> Optional[st
     return content.strip() if isinstance(content, str) else None
 
 
-def _rerank_with_llm(context_text: str, candidates: List[dict]) -> Optional[List[dict]]:
+def generate_with_llm(
+    prompt: str,
+    use_openai: bool = False,
+    openai_api_key: str | None = None,
+) -> Optional[str]:
+    if use_openai and _openai_available(openai_api_key):
+        response = generate_with_openai(prompt, openai_api_key)
+        if response:
+            return response
+    return generate_with_ollama(prompt)
+
+
+def _rerank_with_llm(
+    context_text: str,
+    candidates: List[dict],
+    use_openai: bool = False,
+    openai_api_key: str | None = None,
+) -> Optional[List[dict]]:
     if not candidates:
         return None
     limited = candidates[:RERANK_CANDIDATES]
@@ -900,7 +921,7 @@ def _rerank_with_llm(context_text: str, candidates: List[dict]) -> Optional[List
         + "\nFormat: {\"scores\":[{\"index\":1,\"score\":0.87}]}\n"
         "Score range: 0 to 1. Include all candidates."
     )
-    response = generate_with_ollama(prompt)
+    response = generate_with_llm(prompt, use_openai=use_openai, openai_api_key=openai_api_key)
     data = _extract_json(response or "")
     if not data or "scores" not in data:
         return None
@@ -952,12 +973,26 @@ def _rerank_with_kobert(context_text: str, candidates: List[dict]) -> Optional[L
     return reranked + candidates[len(limited) :]
 
 
-def _rerank_candidates(context_text: str, candidates: List[dict]) -> List[dict]:
+def _rerank_candidates(
+    context_text: str,
+    candidates: List[dict],
+    use_openai: bool = False,
+    openai_api_key: str | None = None,
+) -> List[dict]:
     if not candidates:
         return candidates
     mode = (RERANK_MODE or "ko-bert").lower()
     if mode == "ko-bert":
         reranked = _rerank_with_kobert(context_text, candidates)
+        if reranked:
+            return reranked
+    if mode == "llm":
+        reranked = _rerank_with_llm(
+            context_text,
+            candidates,
+            use_openai=use_openai,
+            openai_api_key=openai_api_key,
+        )
         if reranked:
             return reranked
     return candidates
@@ -979,7 +1014,11 @@ def _extract_json(text: str) -> Optional[dict]:
 
 
 def gate_need_verse(
-    user_message: str, summary: str = "", recent_messages: Optional[List[dict]] = None
+    user_message: str,
+    summary: str = "",
+    recent_messages: Optional[List[dict]] = None,
+    use_openai: bool = False,
+    openai_api_key: str | None = None,
 ) -> dict:
     context_text = _build_context_text(user_message, summary, recent_messages)
     prompt = (
@@ -989,7 +1028,7 @@ def gate_need_verse(
         f"User message: {user_message}\n"
         'Format: {"need_verse": true|false, "topics": [], "user_goal": "", "risk_flags": []}'
     )
-    response = generate_with_ollama(prompt)
+    response = generate_with_llm(prompt, use_openai=use_openai, openai_api_key=openai_api_key)
     data = _extract_json(response or "")
     rule = _rule_based_gating(user_message, summary, recent_messages)
     if data and isinstance(data, dict):
@@ -1018,14 +1057,19 @@ def gate_need_verse(
     }
 
 
-def summarize_messages(messages: List[dict], previous_summary: str) -> str:
+def summarize_messages(
+    messages: List[dict],
+    previous_summary: str,
+    use_openai: bool = False,
+    openai_api_key: str | None = None,
+) -> str:
     joined = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
     prompt = (
         "Summarize the conversation in Korean within 800 characters. "
         "Include: user situation, emotions, repeated concerns, and preferences.\n"
         f"Previous summary:\n{previous_summary}\n\nConversation:\n{joined}\n"
     )
-    response = generate_with_ollama(prompt)
+    response = generate_with_llm(prompt, use_openai=use_openai, openai_api_key=openai_api_key)
     if response:
         return response.strip()[:SUMMARY_MAX_CHARS]
     # Fallback summary: last few user lines only
@@ -1038,7 +1082,7 @@ def build_assistant_message(
     gating: dict,
     summary: str,
     recent_messages: List[dict],
-    use_openai_for_citations: bool = False,
+    use_openai: bool = False,
     openai_api_key: str | None = None,
 ) -> tuple[str, bool]:
     recent_text = "\n".join(f"{m['role']}: {m['content']}" for m in recent_messages)
@@ -1050,11 +1094,7 @@ def build_assistant_message(
         f"Gating: {gating}\n"
         f"User: {user_message}\n"
     )
-    response = None
-    if use_openai_for_citations and _openai_available(openai_api_key):
-        response = generate_with_openai(prompt, openai_api_key)
-    if not response:
-        response = generate_with_ollama(prompt)
+    response = generate_with_llm(prompt, use_openai=use_openai, openai_api_key=openai_api_key)
     if response:
         return response.strip(), True
     return (
@@ -1141,6 +1181,8 @@ def retrieve_citations(
     summary: str = "",
     recent_messages: Optional[List[dict]] = None,
     limit: int = 2,
+    use_openai: bool = False,
+    openai_api_key: str | None = None,
 ) -> tuple[List[dict], dict]:
     context_text = _build_context_text(user_message, summary, recent_messages)
     recent_texts = _recent_user_texts(recent_messages)
@@ -1256,7 +1298,12 @@ def retrieve_citations(
     meta["rerank_applied"] = False
     meta["rerank_order_before"] = pre_rerank_order
     if RERANK_MODE.lower() != "off" and items:
-        items = _rerank_candidates(context_text, items)
+        items = _rerank_candidates(
+            context_text,
+            items,
+            use_openai=use_openai,
+            openai_api_key=openai_api_key,
+        )
         meta["rerank_applied"] = any("rerank_score" in item for item in items)
         post_rerank_order = _candidate_order(items)
         meta["rerank_order_after"] = post_rerank_order

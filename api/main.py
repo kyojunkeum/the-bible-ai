@@ -95,6 +95,7 @@ from api.chat import (
     log_chat_event,
     log_search_event,
     log_verse_cited,
+    openai_llm_enabled,
     select_version_id,
     select_citation_version_id,
     retrieve_citations,
@@ -1362,27 +1363,39 @@ def post_message(
             },
         }
 
+    openai_api_key = None
+    use_openai_llm = False
+    if record.get("user_id"):
+        user_settings = get_user_settings(conn, record["user_id"], include_secrets=True)
+        openai_api_key = user_settings.get("openai_api_key")
+        if user_settings.get("openai_citation_enabled") and openai_llm_enabled(openai_api_key):
+            use_openai_llm = True
+
     if len(record["messages"]) >= SUMMARY_TRIGGER_TURNS:
-        summary = summarize_messages(record["messages"], record.get("summary", ""))
+        summary = summarize_messages(
+            record["messages"],
+            record.get("summary", ""),
+            use_openai=use_openai_llm,
+            openai_api_key=openai_api_key,
+        )
         store.set_summary(conversation_id, summary, conn=conn)
     else:
         summary = record.get("summary", "")
 
     recent_messages = record["messages"][-RECENT_TURNS:]
-    gating = gate_need_verse(sanitized_message, summary, recent_messages)
-    use_openai_for_citations = False
-    openai_api_key = None
-    if gating.get("need_verse") and record.get("user_id"):
-        user_settings = get_user_settings(conn, record["user_id"], include_secrets=True)
-        openai_api_key = user_settings.get("openai_api_key")
-        if user_settings.get("openai_citation_enabled") and openai_api_key:
-            use_openai_for_citations = True
+    gating = gate_need_verse(
+        sanitized_message,
+        summary,
+        recent_messages,
+        use_openai=use_openai_llm,
+        openai_api_key=openai_api_key,
+    )
     assistant_message, llm_ok = build_assistant_message(
         sanitized_message,
         gating,
         summary,
         recent_messages,
-        use_openai_for_citations=use_openai_for_citations,
+        use_openai=use_openai_llm,
         openai_api_key=openai_api_key,
     )
     gating["llm_ok"] = llm_ok
@@ -1411,6 +1424,8 @@ def post_message(
             sanitized_message,
             summary=summary,
             recent_messages=recent_messages,
+            use_openai=use_openai_llm,
+            openai_api_key=openai_api_key,
         )
         log_chat_event(
             "retrieval_candidates",

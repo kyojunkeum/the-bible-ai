@@ -890,8 +890,8 @@ export default function App() {
       }
       setOpenaiSettingsNotice(
         nextEnabled
-          ? t("OpenAI citations enabled.", "OpenAI 인용이 켜졌습니다.")
-          : t("OpenAI citations disabled.", "OpenAI 인용이 꺼졌습니다.")
+          ? t("OpenAI chat enabled.", "OpenAI 상담이 켜졌습니다.")
+          : t("OpenAI chat disabled.", "OpenAI 상담이 꺼졌습니다.")
       );
     } catch (err) {
       setOpenaiSettingsError(String(err.message || err));
@@ -1900,20 +1900,20 @@ export default function App() {
               </div>
               <div className="settings-card">
                 <div className="settings-title">
-                  {t("OpenAI citations", "OpenAI 인용")}
+                  {t("OpenAI chat", "OpenAI 상담")}
                 </div>
                 {!authToken && (
                   <div className="meta">
                     {t(
-                      "Sign in to configure OpenAI citations.",
-                      "OpenAI 인용 설정은 로그인 후 변경할 수 있습니다."
+                      "Sign in to configure OpenAI chat.",
+                      "OpenAI 상담 설정은 로그인 후 변경할 수 있습니다."
                     )}
                   </div>
                 )}
                 {authToken && (
                   <>
                     <label className="toggle-row">
-                      <span>{t("Use OpenAI for citations", "인용 시 OpenAI 사용")}</span>
+                      <span>{t("Use OpenAI for counseling", "상담 시 OpenAI 사용")}</span>
                       <input
                         type="checkbox"
                         checked={Boolean(openaiEnabled)}

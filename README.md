@@ -254,10 +254,10 @@ AI는 “언제, 왜, 어떤 구절을 인용했는지” 항상 설명 가능
 
 ## 🤖 OpenAI 연동 (사용자별 BYOK)
 - 기본 상담은 로컬 LLM(Ollama) 사용
-- 사용자 설정에서 `openai_citation_enabled=true`일 때, **성경 인용이 필요한 경우에만** OpenAI 사용
+- 사용자 설정에서 `openai_citation_enabled=true` + API 키 저장 시, 상담 관련 LLM 호출은 OpenAI 사용
 - OpenAI 실패 시 로컬 LLM로 자동 폴백
 - 서버 전역 스위치 `OPENAI_CITATION_ENABLED=1`이 켜져 있어야 동작
-- 인용 필요성 판단/요약은 로컬 LLM 기준
+- OpenAI API 키는 OpenAI 또는 OpenAI 호환 Gateway에서만 유효하며, 다른 LLM 제공자는 별도 키/연동 필요
 
 설정 예시 (로그인 필요):
 - `PATCH /v1/users/me/settings`

@@ -55,7 +55,7 @@ def test_no_forced_citation_without_triggers(monkeypatch):
     monkeypatch.setattr(
         main_mod,
         "gate_need_verse",
-        lambda _msg, _summary, _recent: {
+        lambda *_args, **_kwargs: {
             "need_verse": False,
             "topics": [],
             "user_goal": "",
