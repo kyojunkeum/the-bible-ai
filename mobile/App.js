@@ -1202,11 +1202,12 @@ export default function App() {
     setChatStorageSynced(true);
   };
 
-  const applyOpenaiSettings = async (nextEnabled, { apiKey } = {}) => {
+  const applyOpenaiSettings = async (nextEnabled, { apiKey, notice } = {}) => {
     if (!authToken) return;
     setOpenaiSettingsError("");
     setOpenaiSettingsNotice("");
     setOpenaiSettingsLoading(true);
+    const prevOpenaiEnabled = openaiEnabled;
     try {
       const payload = {
         openai_citation_enabled: Boolean(nextEnabled)
@@ -1223,16 +1224,35 @@ export default function App() {
       });
       if (!res.ok) throw new Error(t("Failed to update settings.", "설정 변경 실패"));
       const data = await res.json();
-      setOpenaiEnabled(Boolean(data.openai_citation_enabled));
-      setOpenaiKeySet(Boolean(data.openai_api_key_set));
+      const nextOpenaiEnabled = Boolean(data.openai_citation_enabled);
+      const nextKeySet = Boolean(data.openai_api_key_set);
+      setOpenaiEnabled(nextOpenaiEnabled);
+      setOpenaiKeySet(nextKeySet);
       if (apiKey !== undefined) {
         setOpenaiKeyInput("");
       }
-      setOpenaiSettingsNotice(
-        nextEnabled
-          ? t("OpenAI chat enabled.", "OpenAI 상담이 켜졌습니다.")
-          : t("OpenAI chat disabled.", "OpenAI 상담이 꺼졌습니다.")
-      );
+      const enabledNotice = nextOpenaiEnabled
+        ? t("OpenAI chat enabled.", "OpenAI 상담이 켜졌습니다.")
+        : t("OpenAI chat disabled.", "OpenAI 상담이 꺼졌습니다.");
+      const keyNotice = nextKeySet
+        ? t("API key saved.", "API 키가 저장되었습니다.")
+        : t("API key cleared.", "API 키가 삭제되었습니다.");
+      const enabledChanged = nextOpenaiEnabled !== Boolean(prevOpenaiEnabled);
+      const notices = [];
+      if (notice === "key") {
+        if (apiKey !== undefined) {
+          notices.push(keyNotice);
+        }
+        if (enabledChanged) {
+          notices.push(enabledNotice);
+        }
+      } else {
+        notices.push(enabledNotice);
+        if (apiKey !== undefined) {
+          notices.push(keyNotice);
+        }
+      }
+      setOpenaiSettingsNotice(notices.length ? notices.join(" ") : "");
     } catch (err) {
       setOpenaiSettingsError(String(err.message || err));
     } finally {
@@ -1252,7 +1272,8 @@ export default function App() {
       return;
     }
     applyOpenaiSettings(nextEnabled, {
-      apiKey: openaiKeyInput.trim() ? openaiKeyInput.trim() : undefined
+      apiKey: openaiKeyInput.trim() ? openaiKeyInput.trim() : undefined,
+      notice: "toggle"
     });
   };
 
@@ -1264,11 +1285,11 @@ export default function App() {
       );
       return;
     }
-    applyOpenaiSettings(openaiEnabled, { apiKey: trimmed });
+    applyOpenaiSettings(openaiEnabled, { apiKey: trimmed, notice: "key" });
   };
 
   const clearOpenaiKey = () => {
-    applyOpenaiSettings(false, { apiKey: "" });
+    applyOpenaiSettings(false, { apiKey: "", notice: "key" });
   };
 
   const toggleBookmark = async (bookId, verse) => {
@@ -1965,9 +1986,22 @@ export default function App() {
                         />
                       </View>
                       <Text style={styles.meta}>
-                        {openaiKeySet
-                          ? t("API key saved.", "API 키가 저장되어 있습니다.")
-                          : t("No API key saved.", "저장된 API 키가 없습니다.")}
+                        {t(
+                          "Status: " +
+                            (openaiEnabled ? "ON" : "OFF") +
+                            " · API key: " +
+                            (openaiKeySet ? "Saved" : "Not saved"),
+                          "상태: " +
+                            (openaiEnabled ? "켜짐" : "꺼짐") +
+                            " · API 키: " +
+                            (openaiKeySet ? "저장됨" : "미저장")
+                        )}
+                      </Text>
+                      <Text style={styles.meta}>
+                        {t(
+                          "For security, saved keys are hidden after saving.",
+                          "보안상 저장된 키는 저장 후 표시되지 않습니다."
+                        )}
                       </Text>
                       <TextInput
                         style={styles.input}

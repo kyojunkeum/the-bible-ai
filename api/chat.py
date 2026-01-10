@@ -892,12 +892,18 @@ def generate_with_llm(
     prompt: str,
     use_openai: bool = False,
     openai_api_key: str | None = None,
+    model_info: Optional[dict] = None,
 ) -> Optional[str]:
     if use_openai and _openai_available(openai_api_key):
         response = generate_with_openai(prompt, openai_api_key)
         if response:
+            if model_info is not None:
+                model_info.update({"provider": "openai", "model": OPENAI_MODEL})
             return response
-    return generate_with_ollama(prompt)
+    response = generate_with_ollama(prompt)
+    if response and model_info is not None:
+        model_info.update({"provider": "ollama", "model": OLLAMA_MODEL})
+    return response
 
 
 def _rerank_with_llm(
@@ -1084,6 +1090,7 @@ def build_assistant_message(
     recent_messages: List[dict],
     use_openai: bool = False,
     openai_api_key: str | None = None,
+    model_info: Optional[dict] = None,
 ) -> tuple[str, bool]:
     recent_text = "\n".join(f"{m['role']}: {m['content']}" for m in recent_messages)
     prompt = (
@@ -1094,7 +1101,12 @@ def build_assistant_message(
         f"Gating: {gating}\n"
         f"User: {user_message}\n"
     )
-    response = generate_with_llm(prompt, use_openai=use_openai, openai_api_key=openai_api_key)
+    response = generate_with_llm(
+        prompt,
+        use_openai=use_openai,
+        openai_api_key=openai_api_key,
+        model_info=model_info,
+    )
     if response:
         return response.strip(), True
     return (

@@ -1305,6 +1305,8 @@ def post_message(
                 "conversation_id": conversation_id,
                 "citations_count": len(citations),
                 "direct_reference": True,
+                "llm_provider": None,
+                "llm_model": None,
             },
         )
         log_verse_cited(conversation_id, citations)
@@ -1390,6 +1392,7 @@ def post_message(
         use_openai=use_openai_llm,
         openai_api_key=openai_api_key,
     )
+    llm_meta: dict = {}
     assistant_message, llm_ok = build_assistant_message(
         sanitized_message,
         gating,
@@ -1397,6 +1400,7 @@ def post_message(
         recent_messages,
         use_openai=use_openai_llm,
         openai_api_key=openai_api_key,
+        model_info=llm_meta,
     )
     gating["llm_ok"] = llm_ok
     if not llm_ok:
@@ -1473,6 +1477,8 @@ def post_message(
             "citations_count": len(citations),
             "need_verse": gating.get("need_verse", False),
             "llm_ok": llm_ok,
+            "llm_provider": llm_meta.get("provider"),
+            "llm_model": llm_meta.get("model"),
             "store_messages": record.get("store_messages", False),
         },
     )
