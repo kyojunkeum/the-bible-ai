@@ -17,3 +17,4 @@ data/raw_html/
 # OS / Editor
 .DS_Store
 .vscode/
+.env
