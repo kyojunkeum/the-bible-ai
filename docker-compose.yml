@@ -14,7 +14,9 @@ services:
       AUTH_CAPTCHA_BYPASS: 8kzG3908GpxBUf-fMBhyQzNJ5OjSJBLi
       REDIS_URL: redis://redis:6379/0
       OPENAI_CITATION_ENABLED: "1"
+      OPENAI_BASE_URL: http://litellm:4000
       OPENAI_MODEL: gpt-4o-mini
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_KEY_ENCRYPTION_SECRET: change-me
     ports:
       - "9000:9000"
@@ -23,6 +25,7 @@ services:
       - hf_cache:/app/.cache/huggingface
     depends_on:
       - postgres
+      - litellm
       - ollama
       - redis
     command: uvicorn api.main:app --reload --host 0.0.0.0 --port 9000
@@ -53,6 +56,16 @@ services:
     container_name: bible-redis
     ports:
       - "6379:6379"
+    restart: unless-stopped
+  litellm:
+    build: ./litellm
+    container_name: bible-litellm
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    ports:
+      - "4000:4000"
     restart: unless-stopped
 
 volumes:
