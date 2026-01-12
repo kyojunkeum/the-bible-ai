@@ -78,7 +78,12 @@ from api.jwt_utils import (
     verify_refresh_token,
 )
 from api.oauth_accounts import get_oauth_account, upsert_oauth_account
-from api.oauth_google import build_google_auth_url, exchange_code_for_tokens, fetch_google_userinfo
+from api.oauth_google import (
+    build_google_auth_url,
+    exchange_code_for_tokens,
+    fetch_google_userinfo,
+    resolve_google_client,
+)
 from api.oauth_state import consume_oauth_state, store_oauth_state
 from api.refresh_tokens import (
     get_refresh_token,
@@ -92,10 +97,12 @@ from api.chat import (
     CRISIS_RESPONSE,
     enforce_exact_citations,
     gate_need_verse,
+    log_api_event,
     log_chat_event,
     log_search_event,
     log_verse_cited,
     openai_llm_enabled,
+    reset_event_log,
     select_version_id,
     select_citation_version_id,
     retrieve_citations,
@@ -140,6 +147,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+EVENT_LOG_RESET_ON_STARTUP = os.getenv("EVENT_LOG_RESET_ON_STARTUP", "1") == "1"
+ALLOW_LOG_RESET = os.getenv("ALLOW_LOG_RESET", "1") == "1"
+
+
+@app.on_event("startup")
+def _reset_event_log_on_startup() -> None:
+    if EVENT_LOG_RESET_ON_STARTUP:
+        reset_event_log("startup")
+
 
 @app.exception_handler(HTTPException)
 def handle_http_exception(_request: Request, exc: HTTPException):
@@ -161,6 +177,15 @@ def handle_validation_exception(_request: Request, exc: RequestValidationError):
             }
         },
     )
+
+
+@app.post("/v1/logs/reset")
+def reset_logs(request: Request):
+    if not ALLOW_LOG_RESET:
+        raise HTTPException(status_code=403, detail="log reset disabled")
+    reset_event_log("client")
+    log_api_event("api_log_reset", {"client": "app"})
+    return {"reset": True}
 
 
 def get_conn():
@@ -422,6 +447,7 @@ def _verify_citations(conn, citations: list[dict]) -> list[dict]:
 
 @app.get("/v1/bible/{version_id}/books", response_model=BooksResponse)
 def list_books(version_id: str, conn=Depends(get_conn)):
+    start = time.perf_counter()
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
             """
@@ -437,6 +463,11 @@ def list_books(version_id: str, conn=Depends(get_conn)):
     if not rows:
         raise HTTPException(status_code=404, detail="version not found")
 
+    elapsed_ms = int((time.perf_counter() - start) * 1000)
+    log_api_event(
+        "db_books",
+        {"version_id": version_id, "count": len(rows), "elapsed_ms": elapsed_ms},
+    )
     return {"items": rows}
 
 
@@ -445,6 +476,7 @@ def list_books(version_id: str, conn=Depends(get_conn)):
     response_model=ChapterResponse,
 )
 def get_chapter(version_id: str, book_id: int, chapter: int, conn=Depends(get_conn)):
+    start = time.perf_counter()
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
             """
@@ -469,6 +501,17 @@ def get_chapter(version_id: str, book_id: int, chapter: int, conn=Depends(get_co
         )
         verses = cur.fetchall()
 
+    elapsed_ms = int((time.perf_counter() - start) * 1000)
+    log_api_event(
+        "db_chapter",
+        {
+            "version_id": version_id,
+            "book_id": book_id,
+            "chapter": chapter,
+            "verses": len(verses),
+            "elapsed_ms": elapsed_ms,
+        },
+    )
     return {"content_hash": hash_row["content_hash"], "verses": verses}
 
 
@@ -483,8 +526,19 @@ def get_ref(
     try:
         book_name, ch, vs = parse_reference(book, chapter, verse)
     except ValueError:
+        log_api_event("db_ref_failed", {"version_id": version_id})
         raise HTTPException(status_code=400, detail="invalid reference")
-    return _fetch_book_and_verse(conn, version_id, book_name, ch, vs)
+    result = _fetch_book_and_verse(conn, version_id, book_name, ch, vs)
+    log_api_event(
+        "db_ref",
+        {
+            "version_id": version_id,
+            "book_id": result.get("book_id"),
+            "chapter": result.get("chapter"),
+            "verse": result.get("verse"),
+        },
+    )
+    return result
 
 
 @app.get("/v1/bible/{version_id}/search", response_model=SearchResponse)
@@ -502,6 +556,15 @@ def search(
         "search_latency",
         {"version_id": version_id, "elapsed_ms": elapsed_ms, "q": q, "total": results.get("total", 0)},
     )
+    log_api_event(
+        "api_search",
+        {
+            "version_id": version_id,
+            "q_len": len(q or ""),
+            "total": results.get("total", 0),
+            "elapsed_ms": elapsed_ms,
+        },
+    )
     slow_ms = int(os.getenv("SEARCH_SLOW_MS", "500"))
     if elapsed_ms > slow_ms:
         log_search_event(
@@ -517,14 +580,18 @@ def search(
 def register(payload: AuthRegisterRequest, conn=Depends(get_conn)):
     email = normalize_email(payload.email)
     if not validate_email(email):
+        log_api_event("auth_register_failed", {"reason": "invalid_email"})
         raise HTTPException(status_code=400, detail="invalid email")
     password = payload.password or ""
     if len(password) < 12:
+        log_api_event("auth_register_failed", {"reason": "password_too_short"})
         raise HTTPException(status_code=400, detail="password too short")
     if len(password) > 128:
+        log_api_event("auth_register_failed", {"reason": "password_too_long"})
         raise HTTPException(status_code=400, detail="password too long")
     existing = get_user_by_email(conn, email)
     if existing:
+        log_api_event("auth_register_failed", {"reason": "email_exists"})
         raise HTTPException(status_code=409, detail="email already registered")
     user = create_user(conn, email, payload.password)
     ensure_user_settings(conn, user["user_id"])
@@ -533,6 +600,7 @@ def register(payload: AuthRegisterRequest, conn=Depends(get_conn)):
     refresh_token, refresh_id, refresh_exp = create_refresh_token(user["user_id"], email)
     store_refresh_token(conn, user["user_id"], refresh_id, refresh_exp, payload.device_id)
     conn.commit()
+    log_api_event("auth_register_success", {"provider": "password"})
     return {
         "user_id": user["user_id"],
         "access_token": access_token,
@@ -556,6 +624,7 @@ def login(payload: AuthLoginRequest, request: Request, conn=Depends(get_conn)):
             login_retry_after(account_attempt, now),
             login_retry_after(ip_attempt, now),
         )
+        log_api_event("auth_login_blocked", {"retry_after": retry_after})
         raise HTTPException(
             status_code=429,
             detail=f"login temporarily blocked, retry after {retry_after}s",
@@ -563,6 +632,7 @@ def login(payload: AuthLoginRequest, request: Request, conn=Depends(get_conn)):
 
     if requires_captcha(account_attempt) or requires_captcha(ip_attempt):
         if not verify_captcha_token(payload.captcha_token, ip_address):
+            log_api_event("auth_login_failed", {"reason": "captcha_required"})
             raise HTTPException(status_code=403, detail="captcha required")
 
     user = get_user_by_email(conn, email)
@@ -572,6 +642,7 @@ def login(payload: AuthLoginRequest, request: Request, conn=Depends(get_conn)):
         if ip_address:
             record_login_failure(conn, "ip", ip_address, now)
         conn.commit()
+        log_api_event("auth_login_failed", {"reason": "invalid_credentials"})
         raise HTTPException(status_code=401, detail="invalid credentials")
 
     if needs_password_upgrade(user["password_hash"]):
@@ -587,6 +658,7 @@ def login(payload: AuthLoginRequest, request: Request, conn=Depends(get_conn)):
     refresh_token, refresh_id, refresh_exp = create_refresh_token(user["user_id"], user["email"])
     store_refresh_token(conn, user["user_id"], refresh_id, refresh_exp, payload.device_id)
     conn.commit()
+    log_api_event("auth_login_success", {"provider": "password"})
     return {
         "user_id": user["user_id"],
         "access_token": access_token,
@@ -599,10 +671,17 @@ def login(payload: AuthLoginRequest, request: Request, conn=Depends(get_conn)):
 
 @app.post("/v1/auth/oauth/google/start", response_model=OAuthStartResponse)
 def oauth_google_start(payload: OAuthStartRequest):
-    if not os.getenv("GOOGLE_CLIENT_ID"):
-        raise HTTPException(status_code=503, detail="google oauth not configured")
     if not payload.redirect_uri or not payload.code_challenge:
+        log_api_event("auth_oauth_start_failed", {"provider": "google", "reason": "invalid_request"})
         raise HTTPException(status_code=400, detail="invalid oauth request")
+    try:
+        client_id, _ = resolve_google_client(payload.client_id)
+    except ValueError as exc:
+        reason = "not_configured" if str(exc) == "not_configured" else "invalid_client"
+        log_api_event("auth_oauth_start_failed", {"provider": "google", "reason": reason})
+        status = 503 if reason == "not_configured" else 400
+        detail = "google oauth not configured" if status == 503 else "invalid oauth request"
+        raise HTTPException(status_code=status, detail=detail)
     state = secrets.token_urlsafe(24)
     store_oauth_state(
         state,
@@ -612,14 +691,17 @@ def oauth_google_start(payload: OAuthStartRequest):
             "code_challenge": payload.code_challenge,
             "code_challenge_method": payload.code_challenge_method or "S256",
             "device_id": payload.device_id or "",
+            "client_id": client_id,
         },
     )
     auth_url = build_google_auth_url(
+        client_id=client_id,
         redirect_uri=payload.redirect_uri,
         state=state,
         code_challenge=payload.code_challenge,
         code_challenge_method=payload.code_challenge_method or "S256",
     )
+    log_api_event("auth_oauth_start", {"provider": "google"})
     return {"provider": "google", "auth_url": auth_url, "state": state}
 
 
@@ -636,29 +718,47 @@ def _pkce_verify(code_verifier: str, code_challenge: str, method: str) -> bool:
 
 @app.post("/v1/auth/oauth/google/exchange", response_model=TokenResponse)
 def oauth_google_exchange(payload: OAuthExchangeRequest, conn=Depends(get_conn)):
-    if not os.getenv("GOOGLE_CLIENT_ID"):
-        raise HTTPException(status_code=503, detail="google oauth not configured")
     state = consume_oauth_state(payload.state)
     if not state or state.get("provider") != "google":
+        log_api_event("auth_oauth_exchange_failed", {"provider": "google", "reason": "invalid_state"})
         raise HTTPException(status_code=400, detail="invalid oauth state")
     if not _pkce_verify(payload.code_verifier, state.get("code_challenge", ""), state.get("code_challenge_method", "S256")):
+        log_api_event("auth_oauth_exchange_failed", {"provider": "google", "reason": "invalid_verifier"})
         raise HTTPException(status_code=400, detail="invalid code_verifier")
     redirect_uri = state.get("redirect_uri") or ""
     try:
-        token_data = exchange_code_for_tokens(payload.code, redirect_uri, payload.code_verifier)
+        client_id, client_secret = resolve_google_client(state.get("client_id"))
+    except ValueError as exc:
+        reason = "not_configured" if str(exc) == "not_configured" else "invalid_client"
+        log_api_event("auth_oauth_exchange_failed", {"provider": "google", "reason": reason})
+        status = 503 if reason == "not_configured" else 400
+        detail = "google oauth not configured" if status == 503 else "invalid oauth request"
+        raise HTTPException(status_code=status, detail=detail)
+    try:
+        token_data = exchange_code_for_tokens(
+            payload.code,
+            redirect_uri,
+            payload.code_verifier,
+            client_id,
+            client_secret,
+        )
         access_token = token_data.get("access_token", "")
         if not access_token:
+            log_api_event("auth_oauth_exchange_failed", {"provider": "google", "reason": "token_missing"})
             raise HTTPException(status_code=502, detail="google oauth failed")
         userinfo = fetch_google_userinfo(access_token)
     except requests.RequestException:
+        log_api_event("auth_oauth_exchange_failed", {"provider": "google", "reason": "request_failed"})
         raise HTTPException(status_code=502, detail="google oauth failed")
 
     provider_user_id = userinfo.get("sub")
     email = userinfo.get("email")
     email_verified = bool(userinfo.get("email_verified"))
     if not provider_user_id or not email:
+        log_api_event("auth_oauth_exchange_failed", {"provider": "google", "reason": "profile_missing"})
         raise HTTPException(status_code=400, detail="google profile missing")
     if not email_verified:
+        log_api_event("auth_oauth_exchange_failed", {"provider": "google", "reason": "email_unverified"})
         raise HTTPException(status_code=403, detail="email not verified")
 
     account = get_oauth_account(conn, "google", provider_user_id)
@@ -687,6 +787,7 @@ def oauth_google_exchange(payload: OAuthExchangeRequest, conn=Depends(get_conn))
     refresh_token, refresh_id, refresh_exp = create_refresh_token(user_id, email)
     store_refresh_token(conn, user_id, refresh_id, refresh_exp, payload.device_id or "")
     conn.commit()
+    log_api_event("auth_oauth_exchange_success", {"provider": "google"})
 
     return {
         "user_id": user_id,
@@ -702,18 +803,23 @@ def oauth_google_exchange(payload: OAuthExchangeRequest, conn=Depends(get_conn))
 def refresh_token(payload: RefreshRequest, conn=Depends(get_conn)):
     refresh_payload = verify_refresh_token(payload.refresh_token)
     if not refresh_payload:
+        log_api_event("auth_refresh_failed", {"reason": "invalid_token"})
         raise HTTPException(status_code=401, detail="invalid refresh token")
     refresh_id = refresh_payload.get("jti")
     if not refresh_id:
+        log_api_event("auth_refresh_failed", {"reason": "missing_jti"})
         raise HTTPException(status_code=401, detail="invalid refresh token")
     record = get_refresh_token(conn, refresh_id)
     if not is_refresh_token_active(record):
+        log_api_event("auth_refresh_failed", {"reason": "revoked"})
         raise HTTPException(status_code=401, detail="refresh token revoked")
     user_id = refresh_payload.get("sub")
     if not user_id:
+        log_api_event("auth_refresh_failed", {"reason": "missing_sub"})
         raise HTTPException(status_code=401, detail="invalid refresh token")
     user = get_user_by_id(conn, user_id)
     if not user:
+        log_api_event("auth_refresh_failed", {"reason": "user_not_found"})
         raise HTTPException(status_code=401, detail="user not found")
 
     revoke_refresh_token(conn, refresh_id)
@@ -721,6 +827,7 @@ def refresh_token(payload: RefreshRequest, conn=Depends(get_conn)):
     new_refresh_token, new_refresh_id, new_refresh_exp = create_refresh_token(user_id, user.get("email"))
     store_refresh_token(conn, user_id, new_refresh_id, new_refresh_exp, record.get("device_id") if record else None)
     conn.commit()
+    log_api_event("auth_refresh_success", {})
     return {
         "user_id": user_id,
         "access_token": access_token,
@@ -733,6 +840,7 @@ def refresh_token(payload: RefreshRequest, conn=Depends(get_conn)):
 
 @app.get("/v1/auth/me", response_model=AuthMeResponse)
 def me(current_user=Depends(require_user)):
+    log_api_event("auth_me", {})
     return {
         "user_id": current_user["user_id"],
         "email": current_user["email"],
@@ -747,14 +855,17 @@ def me(current_user=Depends(require_user)):
 def logout(request: Request, conn=Depends(get_conn)):
     token = _get_bearer_token(request)
     if not token:
+        log_api_event("auth_logout_failed", {"reason": "missing_token"})
         raise HTTPException(status_code=401, detail="auth required")
     payload = verify_refresh_token(token)
     if payload and payload.get("jti"):
         revoke_refresh_token(conn, payload["jti"])
         conn.commit()
+        log_api_event("auth_logout_success", {"token_type": "refresh"})
         return {"revoked": True}
     revoked = revoke_session(conn, token)
     conn.commit()
+    log_api_event("auth_logout_success", {"token_type": "session", "revoked": revoked})
     return {"revoked": revoked}
 
 
@@ -762,6 +873,7 @@ def logout(request: Request, conn=Depends(get_conn)):
 def get_user_settings_api(current_user=Depends(require_user), conn=Depends(get_conn)):
     settings = get_user_settings(conn, current_user["user_id"])
     updated_at = settings.get("updated_at")
+    log_api_event("user_settings_get", {})
     return {
         "store_messages": bool(settings.get("store_messages")),
         "openai_citation_enabled": bool(settings.get("openai_citation_enabled")),
@@ -785,6 +897,13 @@ def update_user_settings_api(
     )
     conn.commit()
     updated_at = settings.get("updated_at")
+    log_api_event(
+        "user_settings_update",
+        {
+            "store_messages": bool(settings.get("store_messages")),
+            "openai_citation_enabled": bool(settings.get("openai_citation_enabled")),
+        },
+    )
     return {
         "store_messages": bool(settings.get("store_messages")),
         "openai_citation_enabled": bool(settings.get("openai_citation_enabled")),
@@ -834,6 +953,10 @@ def list_bookmarks(
         }
         for row in rows
     ]
+    log_api_event(
+        "bookmark_list",
+        {"version_id": version_id, "count": len(items), "limit": limit, "offset": offset},
+    )
     return {"items": items}
 
 
@@ -859,6 +982,16 @@ def create_bookmark(payload: BookmarkRequest, current_user=Depends(require_user)
         )
         created = cur.rowcount > 0
     conn.commit()
+    log_api_event(
+        "bookmark_create",
+        {
+            "version_id": payload.version_id,
+            "book_id": payload.book_id,
+            "chapter": payload.chapter,
+            "verse": payload.verse,
+            "created": created,
+        },
+    )
     return {"created": created}
 
 
@@ -883,6 +1016,16 @@ def delete_bookmark(
         )
         deleted = cur.rowcount > 0
     conn.commit()
+    log_api_event(
+        "bookmark_delete",
+        {
+            "version_id": version_id,
+            "book_id": book_id,
+            "chapter": chapter,
+            "verse": verse,
+            "deleted": deleted,
+        },
+    )
     return {"deleted": deleted}
 
 
@@ -931,6 +1074,10 @@ def list_memos(
         }
         for row in rows
     ]
+    log_api_event(
+        "memo_list",
+        {"version_id": version_id, "count": len(items), "limit": limit, "offset": offset},
+    )
     return {"items": items}
 
 
@@ -939,6 +1086,7 @@ def upsert_memo(payload: MemoRequest, current_user=Depends(require_user), conn=D
     user_id = current_user["user_id"]
     memo_text = (payload.memo_text or "").strip()
     if not memo_text:
+        log_api_event("memo_upsert_failed", {"reason": "empty"})
         raise HTTPException(status_code=400, detail="memo_text required")
     with conn.cursor() as cur:
         cur.execute(
@@ -960,6 +1108,15 @@ def upsert_memo(payload: MemoRequest, current_user=Depends(require_user), conn=D
             ),
         )
     conn.commit()
+    log_api_event(
+        "memo_upsert",
+        {
+            "version_id": payload.version_id,
+            "book_id": payload.book_id,
+            "chapter": payload.chapter,
+            "verse": payload.verse,
+        },
+    )
     return {"saved": True}
 
 
@@ -984,6 +1141,16 @@ def delete_memo(
         )
         deleted = cur.rowcount > 0
     conn.commit()
+    log_api_event(
+        "memo_delete",
+        {
+            "version_id": version_id,
+            "book_id": book_id,
+            "chapter": chapter,
+            "verse": verse,
+            "deleted": deleted,
+        },
+    )
     return {"deleted": deleted}
 
 
@@ -1051,6 +1218,14 @@ def create_conversation(payload: ChatCreateRequest, request: Request, conn=Depen
             "mode": mode,
         },
     )
+    log_api_event(
+        "chat_create",
+        {
+            "conversation_id": record["conversation_id"],
+            "mode": mode,
+            "store_messages": store_messages,
+        },
+    )
     meta_payload = _meta_payload(meta)
     meta_payload.update(_daily_payload(daily_info))
     return {
@@ -1085,6 +1260,7 @@ def get_conversation(conversation_id: str, request: Request, conn=Depends(get_co
         daily_info = get_anonymous_daily_usage(identifier, ANON_DAILY_TURN_LIMIT, scope=scope)
     meta_payload = _meta_payload(meta)
     meta_payload.update(_daily_payload(daily_info))
+    log_api_event("chat_get", {"conversation_id": conversation_id})
     return {
         "conversation_id": record["conversation_id"],
         "created_at": record["created_at"],
@@ -1113,6 +1289,7 @@ def delete_conversation(conversation_id: str, conn=Depends(get_conn)):
     if not deleted:
         raise HTTPException(status_code=404, detail="conversation not found")
     log_chat_event("chat_deleted", {"conversation_id": conversation_id})
+    log_api_event("chat_delete", {"conversation_id": conversation_id})
     return {"deleted": deleted}
 
 
@@ -1366,12 +1543,7 @@ def post_message(
         }
 
     openai_api_key = None
-    use_openai_llm = False
-    if record.get("user_id"):
-        user_settings = get_user_settings(conn, record["user_id"], include_secrets=True)
-        openai_api_key = user_settings.get("openai_api_key")
-        if user_settings.get("openai_citation_enabled") and openai_llm_enabled(openai_api_key):
-            use_openai_llm = True
+    use_openai_llm = openai_llm_enabled()
 
     if len(record["messages"]) >= SUMMARY_TRIGGER_TURNS:
         summary = summarize_messages(

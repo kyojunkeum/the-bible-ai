@@ -250,7 +250,7 @@ AI는 “언제, 왜, 어떤 구절을 인용했는지” 항상 설명 가능
 - Google OAuth는 PKCE 방식 (client_secret 없이 동작 가능)
 - 리다이렉트 예시
   - Web: `https://<YOUR_WEB_DOMAIN>` (현재 웹 앱의 origin)
-  - Mobile: `thebibleai://oauth/google`
+  - Mobile: `com.googleusercontent.apps.<MOBILE_CLIENT_ID>:/oauth2redirect`
 
 ## 🤖 OpenAI 연동 (사용자별 BYOK)
 - 기본 상담은 로컬 LLM(Ollama) 사용
@@ -283,7 +283,9 @@ LLM Gateway 사용 시:
 - `REDIS_URL`
 - `ANON_CHAT_TTL_SEC`, `ANON_CHAT_TURN_LIMIT`, `ANON_DAILY_TURN_LIMIT`
 - `JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE`, `JWT_ACCESS_TTL_SEC`, `JWT_REFRESH_TTL_SEC`
-- `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` (선택, 없으면 OAuth 비활성)
+- `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` (웹 OAuth)
+- `GOOGLE_MOBILE_CLIENT_ID`, `GOOGLE_MOBILE_CLIENT_SECRET` (모바일 OAuth, 선택)
+- `GOOGLE_ALLOWED_CLIENT_IDS` (추가 허용 client_id, 쉼표 구분)
 - `OPENAI_CITATION_ENABLED`, `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_TIMEOUT_SEC`, `OPENAI_BASE_URL`
 - `OPENAI_KEY_ENCRYPTION_SECRET` (설정 시 DB에 저장되는 사용자 키를 암호화, 미설정 시 평문 저장)
 - `KOBERT_MODEL_ID`, `RERANK_CANDIDATES`, `RERANK_TOP_N`

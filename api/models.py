@@ -244,6 +244,7 @@ class OAuthStartRequest(BaseModel):
     code_challenge: str
     code_challenge_method: str = "S256"
     device_id: str | None = None
+    client_id: str | None = None
 
 
 class OAuthStartResponse(BaseModel):

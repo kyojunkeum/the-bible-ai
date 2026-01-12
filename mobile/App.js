@@ -16,11 +16,18 @@ import {
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import * as Crypto from "expo-crypto";
+import * as WebBrowser from "expo-web-browser";
+
+WebBrowser.maybeCompleteAuthSession();
 
 const API_BASE = process.env.EXPO_PUBLIC_API_BASE || "http://localhost:9000";
+const GOOGLE_OAUTH_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID || "";
+const GOOGLE_OAUTH_CLIENT_ID_SHORT = GOOGLE_OAUTH_CLIENT_ID.replace(
+  /\.apps\.googleusercontent\.com$/i,
+  ""
+);
 const GOOGLE_OAUTH_ENABLED =
-  process.env.EXPO_PUBLIC_GOOGLE_OAUTH_ENABLED === "1" ||
-  Boolean(process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID);
+  process.env.EXPO_PUBLIC_GOOGLE_OAUTH_ENABLED === "1" || Boolean(GOOGLE_OAUTH_CLIENT_ID);
 const VERSE_FONT_SIZE_KEY = "bible:verse_font_size";
 const SPLASH_DURATION_MS = 5000;
 const SPLASH_MESSAGE_KO =
@@ -126,8 +133,10 @@ const PKCE_VERIFIER_PREFIX = "pkce_verifier:";
 const pkceVerifierKey = (state) => `${PKCE_VERIFIER_PREFIX}${state}`;
 const CODE_VERIFIER_CHARS =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
-const OAUTH_REDIRECT_SCHEME = "thebibleai";
-const OAUTH_REDIRECT_PATH = "oauth/google";
+const OAUTH_REDIRECT_SCHEME = GOOGLE_OAUTH_CLIENT_ID_SHORT
+  ? `com.googleusercontent.apps.${GOOGLE_OAUTH_CLIENT_ID_SHORT}`
+  : "thebibleai";
+const OAUTH_REDIRECT_PATH = "oauth2redirect";
 
 // ✅ 추가: UI 언어 옵션
 const UI_LANGUAGE_OPTIONS = [
@@ -164,7 +173,7 @@ const buildCodeChallenge = async (verifier) => {
   return digest.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 };
 
-const buildRedirectUri = () => `${OAUTH_REDIRECT_SCHEME}://${OAUTH_REDIRECT_PATH}`;
+const buildRedirectUri = () => `${OAUTH_REDIRECT_SCHEME}:/${OAUTH_REDIRECT_PATH}`;
 
 
 const makeVerseKey = (bookId, chapter, verse) => `${bookId}:${chapter}:${verse}`;
@@ -262,12 +271,6 @@ export default function App() {
   const [settingsNotice, setSettingsNotice] = useState("");
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [serverStoreMessages, setServerStoreMessages] = useState(null);
-  const [openaiEnabled, setOpenaiEnabled] = useState(false);
-  const [openaiKeySet, setOpenaiKeySet] = useState(false);
-  const [openaiKeyInput, setOpenaiKeyInput] = useState("");
-  const [openaiSettingsError, setOpenaiSettingsError] = useState("");
-  const [openaiSettingsNotice, setOpenaiSettingsNotice] = useState("");
-  const [openaiSettingsLoading, setOpenaiSettingsLoading] = useState(false);
   const [chatMeta, setChatMeta] = useState(null);
   const [chatLimitReached, setChatLimitReached] = useState(false);
 
@@ -289,6 +292,7 @@ export default function App() {
 
   const chapterCache = useRef(new Map());
   const cacheOrder = useRef([]);
+  const lastOauthUrlRef = useRef("");
 
   const isEnglishUI = uiLang === "en";
   const t = (en, ko) => (isEnglishUI ? en : ko);
@@ -487,6 +491,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    fetch(`${API_BASE}/v1/logs/reset`, { method: "POST" }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
     AsyncStorage.setItem(STORAGE_KEYS.tab, activeTab).catch(() => {});
   }, [activeTab]);
 
@@ -532,12 +540,6 @@ export default function App() {
   useEffect(() => {
     if (!authToken) {
       setServerStoreMessages(null);
-      setOpenaiEnabled(false);
-      setOpenaiKeySet(false);
-      setOpenaiKeyInput("");
-      setOpenaiSettingsError("");
-      setOpenaiSettingsNotice("");
-      setOpenaiSettingsLoading(false);
       setCaptchaRequired(false);
       setAuthCaptcha("");
       setChatMeta(null);
@@ -558,8 +560,6 @@ export default function App() {
         const data = await res.json();
         const storeValue = Boolean(data.store_messages);
         setServerStoreMessages(storeValue);
-        setOpenaiEnabled(Boolean(data.openai_citation_enabled));
-        setOpenaiKeySet(Boolean(data.openai_api_key_set));
         if (!chatStorageSynced && storeValue === chatStorageConsent) {
           setChatStorageSynced(true);
         }
@@ -898,7 +898,8 @@ export default function App() {
           redirect_uri: redirectUri,
           code_challenge: challenge,
           code_challenge_method: "S256",
-          device_id: deviceId || "mobile"
+          device_id: deviceId || "mobile",
+          client_id: GOOGLE_OAUTH_CLIENT_ID || undefined
         })
       });
       if (!res.ok) throw new Error(t("Google sign-in is not available.", "구글 로그인 사용 불가"));
@@ -907,7 +908,18 @@ export default function App() {
         throw new Error(t("Google sign-in failed to start.", "구글 로그인 시작 실패"));
       }
       await AsyncStorage.setItem(pkceVerifierKey(data.state), verifier);
-      await Linking.openURL(data.auth_url);
+      const authResult = await WebBrowser.openAuthSessionAsync(data.auth_url, redirectUri);
+      if (authResult.type === "success" && authResult.url) {
+        await handleOauthUrl(authResult.url);
+        return;
+      }
+      if (authResult.type === "cancel" || authResult.type === "dismiss") {
+        setOauthError(t("Google sign-in was canceled.", "구글 로그인이 취소되었습니다."));
+        return;
+      }
+      if (authResult.type === "locked") {
+        await Linking.openURL(data.auth_url);
+      }
     } catch (err) {
       setOauthError(String(err.message || err));
     } finally {
@@ -916,9 +928,11 @@ export default function App() {
   };
 
   const handleOauthUrl = async (url) => {
-    if (!GOOGLE_OAUTH_ENABLED || !url || !url.startsWith(`${OAUTH_REDIRECT_SCHEME}://`)) return;
+    if (!GOOGLE_OAUTH_ENABLED || !url || !url.startsWith(`${OAUTH_REDIRECT_SCHEME}:/`)) return;
     const query = url.split("?")[1] || "";
     if (!query) return;
+    if (lastOauthUrlRef.current === url) return;
+    lastOauthUrlRef.current = url;
     const params = new URLSearchParams(query);
     const code = params.get("code");
     const state = params.get("state");
@@ -1211,96 +1225,6 @@ export default function App() {
 
   const dismissSyncPrompt = () => {
     setChatStorageSynced(true);
-  };
-
-  const applyOpenaiSettings = async (nextEnabled, { apiKey, notice } = {}) => {
-    if (!authToken) return;
-    setOpenaiSettingsError("");
-    setOpenaiSettingsNotice("");
-    setOpenaiSettingsLoading(true);
-    const prevOpenaiEnabled = openaiEnabled;
-    try {
-      const payload = {
-        openai_citation_enabled: Boolean(nextEnabled)
-      };
-      if (apiKey !== undefined) {
-        payload.openai_api_key = apiKey;
-      }
-      const res = await authFetch(`${API_BASE}/v1/users/me/settings`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(payload)
-      });
-      if (!res.ok) throw new Error(t("Failed to update settings.", "설정 변경 실패"));
-      const data = await res.json();
-      const nextOpenaiEnabled = Boolean(data.openai_citation_enabled);
-      const nextKeySet = Boolean(data.openai_api_key_set);
-      setOpenaiEnabled(nextOpenaiEnabled);
-      setOpenaiKeySet(nextKeySet);
-      if (apiKey !== undefined) {
-        setOpenaiKeyInput("");
-      }
-      const enabledNotice = nextOpenaiEnabled
-        ? t("OpenAI chat enabled.", "OpenAI 상담이 켜졌습니다.")
-        : t("OpenAI chat disabled.", "OpenAI 상담이 꺼졌습니다.");
-      const keyNotice = nextKeySet
-        ? t("API key saved.", "API 키가 저장되었습니다.")
-        : t("API key cleared.", "API 키가 삭제되었습니다.");
-      const enabledChanged = nextOpenaiEnabled !== Boolean(prevOpenaiEnabled);
-      const notices = [];
-      if (notice === "key") {
-        if (apiKey !== undefined) {
-          notices.push(keyNotice);
-        }
-        if (enabledChanged) {
-          notices.push(enabledNotice);
-        }
-      } else {
-        notices.push(enabledNotice);
-        if (apiKey !== undefined) {
-          notices.push(keyNotice);
-        }
-      }
-      setOpenaiSettingsNotice(notices.length ? notices.join(" ") : "");
-    } catch (err) {
-      setOpenaiSettingsError(String(err.message || err));
-    } finally {
-      setOpenaiSettingsLoading(false);
-    }
-  };
-
-  const requestOpenaiToggle = (nextEnabled) => {
-    if (!authToken) {
-      setOpenaiSettingsError(t("Sign in to change settings.", "로그인 후 설정할 수 있습니다."));
-      return;
-    }
-    if (nextEnabled && !openaiKeySet && !openaiKeyInput.trim()) {
-      setOpenaiSettingsError(
-        t("Please add an OpenAI API key first.", "OpenAI API 키를 먼저 입력하세요.")
-      );
-      return;
-    }
-    applyOpenaiSettings(nextEnabled, {
-      apiKey: openaiKeyInput.trim() ? openaiKeyInput.trim() : undefined,
-      notice: "toggle"
-    });
-  };
-
-  const saveOpenaiKey = () => {
-    const trimmed = openaiKeyInput.trim();
-    if (!trimmed) {
-      setOpenaiSettingsError(
-        t("Enter an OpenAI API key to save.", "저장할 OpenAI API 키를 입력하세요.")
-      );
-      return;
-    }
-    applyOpenaiSettings(openaiEnabled, { apiKey: trimmed, notice: "key" });
-  };
-
-  const clearOpenaiKey = () => {
-    applyOpenaiSettings(false, { apiKey: "", notice: "key" });
   };
 
   const toggleBookmark = async (bookId, verse) => {
@@ -1977,75 +1901,12 @@ export default function App() {
 
                 <View style={styles.card}>
                   <Text style={styles.label}>{t("OpenAI chat", "OpenAI 상담")}</Text>
-                  {!authToken ? (
-                    <Text style={styles.meta}>
-                      {t(
-                        "Sign in to configure OpenAI chat.",
-                        "OpenAI 상담 설정은 로그인 후 변경할 수 있습니다."
-                      )}
-                    </Text>
-                  ) : (
-                    <>
-                      <View style={styles.toggleRow}>
-                        <Text style={styles.settingValue}>
-                          {t("Use OpenAI for counseling", "상담 시 OpenAI 사용")}
-                        </Text>
-                        <Switch
-                          value={Boolean(openaiEnabled)}
-                          onValueChange={(value) => requestOpenaiToggle(value)}
-                          disabled={openaiSettingsLoading}
-                        />
-                      </View>
-                      <Text style={styles.meta}>
-                        {t(
-                          "Status: " +
-                            (openaiEnabled ? "ON" : "OFF") +
-                            " · API key: " +
-                            (openaiKeySet ? "Saved" : "Not saved"),
-                          "상태: " +
-                            (openaiEnabled ? "켜짐" : "꺼짐") +
-                            " · API 키: " +
-                            (openaiKeySet ? "저장됨" : "미저장")
-                        )}
-                      </Text>
-                      <Text style={styles.meta}>
-                        {t(
-                          "For security, saved keys are hidden after saving.",
-                          "보안상 저장된 키는 저장 후 표시되지 않습니다."
-                        )}
-                      </Text>
-                      <TextInput
-                        style={styles.input}
-                        placeholder="sk-..."
-                        value={openaiKeyInput}
-                        onChangeText={setOpenaiKeyInput}
-                        autoCapitalize="none"
-                        secureTextEntry
-                      />
-                      <View style={styles.noticeActions}>
-                        <TouchableOpacity
-                          style={[styles.primary, openaiSettingsLoading && styles.primaryDisabled]}
-                          onPress={saveOpenaiKey}
-                          disabled={openaiSettingsLoading || !openaiKeyInput.trim()}
-                        >
-                          <Text style={styles.primaryText}>{t("Save key", "키 저장")}</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                          style={[styles.secondary, openaiSettingsLoading && styles.primaryDisabled]}
-                          onPress={clearOpenaiKey}
-                          disabled={openaiSettingsLoading || !openaiKeySet}
-                        >
-                          <Text style={styles.secondaryText}>{t("Clear key", "키 삭제")}</Text>
-                        </TouchableOpacity>
-                      </View>
-                      {openaiSettingsError ? (
-                        <Text style={styles.error}>{openaiSettingsError}</Text>
-                      ) : null}
-                      {openaiSettingsNotice ? (
-                        <Text style={styles.meta}>{openaiSettingsNotice}</Text>
-                      ) : null}
-                    </>
-                  )}
+                  <Text style={styles.meta}>
+                    {t(
+                      "Counseling uses the OpenAI API. Usage cost is covered by the operator.",
+                      "상담은 OpenAI API를 사용하며 비용은 운영자 부담입니다."
+                    )}
+                  </Text>
                 </View>
 
                 <View style={styles.card}>

@@ -804,6 +804,25 @@ def log_search_event(event_type: str, payload: dict) -> None:
     _log_event(event_type, payload)
 
 
+def log_api_event(event_type: str, payload: dict) -> None:
+    _log_event(event_type, payload)
+
+
+def reset_event_log(reason: str = "startup", payload: Optional[dict] = None) -> None:
+    try:
+        dir_path = os.path.dirname(EVENT_LOG_PATH)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
+        with open(EVENT_LOG_PATH, "w", encoding="utf-8") as f:
+            f.write("")
+        data = {"reason": reason}
+        if payload:
+            data.update(payload)
+        _log_event("event_log_reset", data)
+    except OSError:
+        pass
+
+
 def generate_with_ollama(prompt: str) -> Optional[str]:
     url = f"{OLLAMA_URL}/api/generate"
     payload = {"model": OLLAMA_MODEL, "prompt": prompt, "stream": False}

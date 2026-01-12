@@ -329,12 +329,6 @@ export default function App() {
   const [settingsNotice, setSettingsNotice] = useState("");
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [serverStoreMessages, setServerStoreMessages] = useState(null);
-  const [openaiEnabled, setOpenaiEnabled] = useState(false);
-  const [openaiKeySet, setOpenaiKeySet] = useState(false);
-  const [openaiKeyInput, setOpenaiKeyInput] = useState("");
-  const [openaiSettingsError, setOpenaiSettingsError] = useState("");
-  const [openaiSettingsNotice, setOpenaiSettingsNotice] = useState("");
-  const [openaiSettingsLoading, setOpenaiSettingsLoading] = useState(false);
   const [chatMeta, setChatMeta] = useState(null);
   const [chatLimitReached, setChatLimitReached] = useState(false);
 
@@ -422,6 +416,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    fetch(`${API_BASE}/v1/logs/reset`, { method: "POST" }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
     if (typeof window === "undefined") return;
     localStorage.setItem(VERSE_FONT_SIZE_KEY, String(verseFontSize));
   }, [verseFontSize]);
@@ -468,12 +466,6 @@ export default function App() {
   useEffect(() => {
     if (!authToken) {
       setServerStoreMessages(null);
-      setOpenaiEnabled(false);
-      setOpenaiKeySet(false);
-      setOpenaiKeyInput("");
-      setOpenaiSettingsError("");
-      setOpenaiSettingsNotice("");
-      setOpenaiSettingsLoading(false);
       setCaptchaRequired(false);
       setAuthCaptcha("");
       setChatMeta(null);
@@ -494,8 +486,6 @@ export default function App() {
         const data = await res.json();
         const storeValue = Boolean(data.store_messages);
         setServerStoreMessages(storeValue);
-        setOpenaiEnabled(Boolean(data.openai_citation_enabled));
-        setOpenaiKeySet(Boolean(data.openai_api_key_set));
         if (!chatStorageSynced && storeValue === chatStorageConsent) {
           setChatStorageSynced(true);
         }
@@ -953,96 +943,6 @@ export default function App() {
 
   const dismissSyncPrompt = () => {
     setChatStorageSynced(true);
-  };
-
-  const applyOpenaiSettings = async (nextEnabled, { apiKey, notice } = {}) => {
-    if (!authToken) return;
-    setOpenaiSettingsError("");
-    setOpenaiSettingsNotice("");
-    setOpenaiSettingsLoading(true);
-    const prevOpenaiEnabled = openaiEnabled;
-    try {
-      const payload = {
-        openai_citation_enabled: Boolean(nextEnabled)
-      };
-      if (apiKey !== undefined) {
-        payload.openai_api_key = apiKey;
-      }
-      const res = await authFetch(`${API_BASE}/v1/users/me/settings`, {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(payload)
-      });
-      if (!res.ok) throw new Error(t("Failed to update settings.", "설정 변경 실패"));
-      const data = await res.json();
-      const nextOpenaiEnabled = Boolean(data.openai_citation_enabled);
-      const nextKeySet = Boolean(data.openai_api_key_set);
-      setOpenaiEnabled(nextOpenaiEnabled);
-      setOpenaiKeySet(nextKeySet);
-      if (apiKey !== undefined) {
-        setOpenaiKeyInput("");
-      }
-      const enabledNotice = nextOpenaiEnabled
-        ? t("OpenAI chat enabled.", "OpenAI 상담이 켜졌습니다.")
-        : t("OpenAI chat disabled.", "OpenAI 상담이 꺼졌습니다.");
-      const keyNotice = nextKeySet
-        ? t("API key saved.", "API 키가 저장되었습니다.")
-        : t("API key cleared.", "API 키가 삭제되었습니다.");
-      const enabledChanged = nextOpenaiEnabled !== Boolean(prevOpenaiEnabled);
-      const notices = [];
-      if (notice === "key") {
-        if (apiKey !== undefined) {
-          notices.push(keyNotice);
-        }
-        if (enabledChanged) {
-          notices.push(enabledNotice);
-        }
-      } else {
-        notices.push(enabledNotice);
-        if (apiKey !== undefined) {
-          notices.push(keyNotice);
-        }
-      }
-      setOpenaiSettingsNotice(notices.length ? notices.join(" ") : "");
-    } catch (err) {
-      setOpenaiSettingsError(String(err.message || err));
-    } finally {
-      setOpenaiSettingsLoading(false);
-    }
-  };
-
-  const requestOpenaiToggle = (nextEnabled) => {
-    if (!authToken) {
-      setOpenaiSettingsError(t("Sign in to change settings.", "로그인 후 설정할 수 있습니다."));
-      return;
-    }
-    if (nextEnabled && !openaiKeySet && !openaiKeyInput.trim()) {
-      setOpenaiSettingsError(
-        t("Please add an OpenAI API key first.", "OpenAI API 키를 먼저 입력하세요.")
-      );
-      return;
-    }
-    applyOpenaiSettings(nextEnabled, {
-      apiKey: openaiKeyInput.trim() ? openaiKeyInput.trim() : undefined,
-      notice: "toggle"
-    });
-  };
-
-  const saveOpenaiKey = () => {
-    const trimmed = openaiKeyInput.trim();
-    if (!trimmed) {
-      setOpenaiSettingsError(
-        t("Enter an OpenAI API key to save.", "저장할 OpenAI API 키를 입력하세요.")
-      );
-      return;
-    }
-    applyOpenaiSettings(openaiEnabled, { apiKey: trimmed, notice: "key" });
-  };
-
-  const clearOpenaiKey = () => {
-    applyOpenaiSettings(false, { apiKey: "", notice: "key" });
   };
 
   const startGoogleOauth = async () => {
@@ -1927,76 +1827,84 @@ export default function App() {
                   )}
                 </div>
               </div>
-              {!authToken && GOOGLE_OAUTH_ENABLED && (
+              {!authToken && (
                 <>
+                  {GOOGLE_OAUTH_ENABLED && (
+                    <>
+                      <button
+                        className="primary"
+                        onClick={startGoogleOauth}
+                        disabled={oauthLoading}
+                      >
+                        {oauthLoading
+                          ? t("Connecting to Google...", "구글 로그인 연결 중...")
+                          : t("Continue with Google", "Google로 계속하기")}
+                      </button>
+                      {oauthError && <div className="error">{oauthError}</div>}
+                    </>
+                  )}
+                  <label>
+                    {t("Email", "이메일")}
+                    <input
+                      type="email"
+                      value={authEmail}
+                      placeholder="you@example.com"
+                      onChange={(e) => setAuthEmail(e.target.value)}
+                    />
+                  </label>
+                  <label>
+                    {t("Password", "비밀번호")}
+                    <input
+                      type="password"
+                      value={authPassword}
+                      placeholder={t(
+                        "At least 12 characters (max 128)",
+                        "12자 이상 (최대 128자)"
+                      )}
+                      onChange={(e) => setAuthPassword(e.target.value)}
+                    />
+                  </label>
+                  {(captchaRequired || authCaptcha) && (
+                    <label>
+                      {t("Captcha token (if required)", "추가 인증 토큰 (필요 시)")}
+                      {captchaRequired &&
+                      CAPTCHA_PROVIDER === "turnstile" &&
+                      TURNSTILE_SITE_KEY ? (
+                        <div className="captcha-turnstile" ref={captchaContainerRef} />
+                      ) : (
+                        <input
+                          type="text"
+                          value={authCaptcha}
+                          placeholder="captcha_token"
+                          onChange={(e) => setAuthCaptcha(e.target.value)}
+                        />
+                      )}
+                    </label>
+                  )}
                   <button
                     className="primary"
-                    onClick={startGoogleOauth}
-                    disabled={oauthLoading}
+                    onClick={handleLogin}
+                    disabled={
+                      authLoading ||
+                      !authEmail ||
+                      !authPassword ||
+                      (captchaRequired && !authCaptcha)
+                    }
                   >
-                    {oauthLoading
-                      ? t("Connecting to Google...", "구글 로그인 연결 중...")
-                      : t("Continue with Google", "Google로 계속하기")}
+                    {authLoading ? t("Working", "처리 중") : t("Sign in", "로그인")}
                   </button>
-                  {oauthError && <div className="error">{oauthError}</div>}
+                  <button
+                    className="ghost"
+                    onClick={handleRegister}
+                    disabled={authLoading || !authEmail || !authPassword}
+                  >
+                    {t("Create account", "회원가입")}
+                  </button>
+                  {authError && <div className="error">{authError}</div>}
+                  {authNotice && <div className="meta">{authNotice}</div>}
                 </>
               )}
-              <label>
-                {t("Email", "이메일")}
-                <input
-                  type="email"
-                  value={authEmail}
-                  placeholder="you@example.com"
-                  onChange={(e) => setAuthEmail(e.target.value)}
-                />
-              </label>
-              <label>
-                {t("Password", "비밀번호")}
-                <input
-                  type="password"
-                  value={authPassword}
-                  placeholder={t(
-                    "At least 12 characters (max 128)",
-                    "12자 이상 (최대 128자)"
-                  )}
-                  onChange={(e) => setAuthPassword(e.target.value)}
-                />
-              </label>
-              {(captchaRequired || authCaptcha) && (
-                <label>
-                  {t("Captcha token (if required)", "추가 인증 토큰 (필요 시)")}
-                  {captchaRequired &&
-                  CAPTCHA_PROVIDER === "turnstile" &&
-                  TURNSTILE_SITE_KEY ? (
-                    <div className="captcha-turnstile" ref={captchaContainerRef} />
-                  ) : (
-                    <input
-                      type="text"
-                      value={authCaptcha}
-                      placeholder="captcha_token"
-                      onChange={(e) => setAuthCaptcha(e.target.value)}
-                    />
-                  )}
-                </label>
-              )}
-              <button
-                className="primary"
-                onClick={handleLogin}
-                disabled={
-                  authLoading || !authEmail || !authPassword || (captchaRequired && !authCaptcha)
-                }
-              >
-                {authLoading ? t("Working", "처리 중") : t("Sign in", "로그인")}
-              </button>
-              <button
-                className="ghost"
-                onClick={handleRegister}
-                disabled={authLoading || !authEmail || !authPassword}
-              >
-                {t("Create account", "회원가입")}
-              </button>
-              {authError && <div className="error">{authError}</div>}
-              {authNotice && <div className="meta">{authNotice}</div>}
+              {authToken && authNotice && <div className="meta">{authNotice}</div>}
               <div className="settings-card">
                 <div className="settings-title">{t("Chat storage", "대화 저장")}</div>
                 {!authToken && (
@@ -2048,74 +1956,12 @@ export default function App() {
                 <div className="settings-title">
                   {t("OpenAI chat", "OpenAI 상담")}
                 </div>
-                {!authToken && (
-                  <div className="meta">
-                    {t(
-                      "Sign in to configure OpenAI chat.",
-                      "OpenAI 상담 설정은 로그인 후 변경할 수 있습니다."
-                    )}
-                  </div>
-                )}
-                {authToken && (
-                  <>
-                    <label className="toggle-row">
-                      <span>{t("Use OpenAI for counseling", "상담 시 OpenAI 사용")}</span>
-                      <input
-                        type="checkbox"
-                        checked={Boolean(openaiEnabled)}
-                        onChange={(e) => requestOpenaiToggle(e.target.checked)}
-                        disabled={openaiSettingsLoading}
-                      />
-                    </label>
-                    <div className="meta">
-                      {t(
-                        "Status: " +
-                          (openaiEnabled ? "ON" : "OFF") +
-                          " · API key: " +
-                          (openaiKeySet ? "Saved" : "Not saved"),
-                        "상태: " +
-                          (openaiEnabled ? "켜짐" : "꺼짐") +
-                          " · API 키: " +
-                          (openaiKeySet ? "저장됨" : "미저장")
-                      )}
-                    </div>
-                    <div className="meta">
-                      {t(
-                        "For security, saved keys are hidden after saving.",
-                        "보안상 저장된 키는 저장 후 표시되지 않습니다."
-                      )}
-                    </div>
-                    <label>
-                      {t("OpenAI API key", "OpenAI API 키")}
-                      <input
-                        type="password"
-                        value={openaiKeyInput}
-                        placeholder="sk-..."
-                        onChange={(e) => setOpenaiKeyInput(e.target.value)}
-                      />
-                    </label>
-                    <div className="notice-actions">
-                      <button
-                        className="primary"
-                        onClick={saveOpenaiKey}
-                        disabled={openaiSettingsLoading || !openaiKeyInput.trim()}
-                      >
-                        {t("Save key", "키 저장")}
-                      </button>
-                      <button
-                        className="ghost"
-                        onClick={clearOpenaiKey}
-                        disabled={openaiSettingsLoading || !openaiKeySet}
-                      >
-                        {t("Clear key", "키 삭제")}
-                      </button>
-                    </div>
-                    {openaiSettingsError && <div className="error">{openaiSettingsError}</div>}
-                    {openaiSettingsNotice && (
-                      <div className="meta">{openaiSettingsNotice}</div>
-                    )}
-                  </>
-                )}
+                <div className="meta">
+                  {t(
+                    "Counseling uses the OpenAI API. Usage cost is covered by the operator.",
+                    "상담은 OpenAI API를 사용하며 비용은 운영자 부담입니다."
+                  )}
+                </div>
               </div>
             </div>
             <div className="content">

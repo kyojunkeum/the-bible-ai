@@ -2,21 +2,27 @@
   "expo": {
     "name": "평안",
     "slug": "thebibleai",
-    "scheme": "thebibleai",
+    "scheme": "com.googleusercontent.apps.163198075964-a0ml9k0smasj8vlgdhmvobsu4iq6bk03",
     "version": "0.1.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "splash": {
       "backgroundColor": "#f6f1e9"
     },
-    "assetBundlePatterns": ["**/*"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.testing.thebibleai"
     },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#f6f1e9"
       }
-    }
+    },
+    "plugins": [
+      "expo-web-browser"
+    ]
   }
 }
