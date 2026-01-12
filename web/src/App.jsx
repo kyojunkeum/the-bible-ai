@@ -4,7 +4,14 @@ const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:9000";
 const GOOGLE_OAUTH_ENABLED =
   import.meta.env.VITE_GOOGLE_OAUTH_ENABLED === "1" ||
   Boolean(import.meta.env.VITE_GOOGLE_CLIENT_ID);
-const TABS = ["Reader", "Search", "Chat", "Account"];
+const CAPTCHA_PROVIDER = import.meta.env.VITE_CAPTCHA_PROVIDER || "turnstile";
+const TURNSTILE_SITE_KEY = import.meta.env.VITE_TURNSTILE_SITE_KEY || "";
+const TABS = [
+  { key: "Reader", labelKo: "읽기", labelEn: "Reader" },
+  { key: "Search", labelKo: "검색", labelEn: "Search" },
+  { key: "Chat", labelKo: "상담", labelEn: "Chat" },
+  { key: "Account", labelKo: "계정", labelEn: "Account" }
+];
 const DEVICE_ID_KEY = "device_id";
 const getOrCreateDeviceId = () => {
   if (typeof window === "undefined") return "web";
@@ -99,6 +106,7 @@ const AUTH_REFRESH_KEY = "auth_refresh_token";
 const AUTH_USER_KEY = "auth_user_id";
 const AUTH_EMAIL_KEY = "auth_email";
 const VERSE_FONT_SIZE_KEY = "verse_font_size";
+const UI_LANG_KEY = "ui_lang";
 const PRIVACY_NOTICE_KEY = "has_seen_privacy_notice";
 const CHAT_STORAGE_CONSENT_KEY = "chat_storage_consent";
 const CHAT_STORAGE_SYNC_KEY = "chat_storage_sync_applied";
@@ -142,6 +150,27 @@ const readLocalBool = (key, fallback = false) => {
   const raw = readLocal(key);
   if (!raw) return fallback;
   return raw === "true";
+};
+
+const UI_LANGUAGE_OPTIONS = [
+  { id: "ko", labelKo: "한국어", labelEn: "Korean" },
+  { id: "en", labelKo: "영어", labelEn: "English" }
+];
+
+const normalizeUiLang = (lang) => {
+  if (!lang) return "ko";
+  const value = String(lang).toLowerCase();
+  if (value.startsWith("en")) return "en";
+  if (value.startsWith("ko")) return "ko";
+  return "ko";
+};
+
+const readUiLang = () => {
+  const saved = readLocal(UI_LANG_KEY);
+  if (saved) return normalizeUiLang(saved);
+  const navLang =
+    typeof navigator !== "undefined" && navigator.language ? navigator.language : "ko";
+  return normalizeUiLang(navLang);
 };
 
 const readFontSize = () => {
@@ -220,19 +249,28 @@ const setCachedChapter = (versionId, bookId, chapter, payload) => {
 export default function App() {
   const [activeTab, setActiveTab] = useState("Reader");
   const [versionId, setVersionId] = useState("krv");
+  const [uiLang, setUiLang] = useState(readUiLang);
   const [showSplash, setShowSplash] = useState(true);
   const [verseFontSize, setVerseFontSize] = useState(readFontSize);
   const browserLocale =
     typeof navigator !== "undefined" && navigator.language ? navigator.language : "ko-KR";
-  const isEnglishVersion = versionId === "eng-web";
-  const t = (en, ko) => (isEnglishVersion ? en : ko);
+  const isEnglishUI = uiLang === "en";
+  const t = (en, ko) => (isEnglishUI ? en : ko);
   const versionOptions = useMemo(
     () =>
       VERSION_OPTIONS.map((version) => ({
         ...version,
-        label: isEnglishVersion ? version.labelEn : version.labelKo
+        label: isEnglishUI ? version.labelEn : version.labelKo
       })),
-    [isEnglishVersion]
+    [isEnglishUI]
+  );
+  const tabOptions = useMemo(
+    () =>
+      TABS.map((tab) => ({
+        ...tab,
+        label: isEnglishUI ? tab.labelEn : tab.labelKo
+      })),
+    [isEnglishUI]
   );
   const selectedVersion = useMemo(
     () =>
@@ -274,6 +312,9 @@ export default function App() {
   const [authError, setAuthError] = useState("");
   const [authNotice, setAuthNotice] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
+  const [captchaRequired, setCaptchaRequired] = useState(false);
+  const captchaContainerRef = useRef(null);
+  const captchaWidgetRef = useRef(null);
   const [oauthError, setOauthError] = useState("");
   const [oauthLoading, setOauthLoading] = useState(false);
   const [chatStorageConsent, setChatStorageConsent] = useState(
@@ -387,6 +428,11 @@ export default function App() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    localStorage.setItem(UI_LANG_KEY, uiLang);
+  }, [uiLang]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
     localStorage.setItem(CHAT_STORAGE_CONSENT_KEY, String(chatStorageConsent));
   }, [chatStorageConsent]);
 
@@ -428,6 +474,8 @@ export default function App() {
       setOpenaiSettingsError("");
       setOpenaiSettingsNotice("");
       setOpenaiSettingsLoading(false);
+      setCaptchaRequired(false);
+      setAuthCaptcha("");
       setChatMeta(null);
       setConversationId("");
       setChatMessages([]);
@@ -465,6 +513,51 @@ export default function App() {
     setMemoDrafts({});
     setActiveVerseKey("");
   }, [selectedBookId, chapter]);
+
+  useEffect(() => {
+    if (!captchaRequired) return;
+    if (CAPTCHA_PROVIDER !== "turnstile" || !TURNSTILE_SITE_KEY) return;
+    if (typeof window === "undefined") return;
+    const existing = document.querySelector("script[data-turnstile]");
+    const ensureScript = () =>
+      new Promise((resolve, reject) => {
+        if (window.turnstile) {
+          resolve(window.turnstile);
+          return;
+        }
+        const script = existing || document.createElement("script");
+        if (!existing) {
+          script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+          script.async = true;
+          script.defer = true;
+          script.setAttribute("data-turnstile", "1");
+          document.head.appendChild(script);
+        }
+        script.addEventListener("load", () => resolve(window.turnstile));
+        script.addEventListener("error", () => reject(new Error("turnstile_load_failed")));
+      });
+    let cancelled = false;
+    ensureScript()
+      .then((turnstile) => {
+        if (cancelled) return;
+        const container = captchaContainerRef.current;
+        if (!container) return;
+        if (captchaWidgetRef.current !== null) {
+          turnstile.reset(captchaWidgetRef.current);
+          return;
+        }
+        captchaWidgetRef.current = turnstile.render(container, {
+          sitekey: TURNSTILE_SITE_KEY,
+          callback: (token) => setAuthCaptcha(token),
+          "expired-callback": () => setAuthCaptcha(""),
+          "error-callback": () => setAuthCaptcha("")
+        });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [captchaRequired]);
 
   useEffect(() => {
     if (previousVersionRef.current === versionId) return;
@@ -1195,6 +1288,7 @@ export default function App() {
       if (data.email) setAuthEmail(data.email);
       setAuthPassword("");
       setAuthCaptcha("");
+      setCaptchaRequired(false);
       setAuthNotice(t("Signed up and logged in.", "회원가입 및 로그인 완료"));
     } catch (err) {
       setAuthError(String(err.message || err));
@@ -1221,6 +1315,11 @@ export default function App() {
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         const message = data?.error?.message || t("Login failed.", "로그인에 실패했습니다.");
+        if (res.status === 403 && message === "captcha required") {
+          setCaptchaRequired(true);
+          setAuthCaptcha("");
+          throw new Error(t("Captcha required.", "추가 인증이 필요합니다."));
+        }
         throw new Error(message);
       }
       const data = await res.json();
@@ -1230,6 +1329,7 @@ export default function App() {
       if (data.email) setAuthEmail(data.email);
       setAuthPassword("");
       setAuthCaptcha("");
+      setCaptchaRequired(false);
       setAuthNotice(t("Logged in.", "로그인 완료"));
     } catch (err) {
       setAuthError(String(err.message || err));
@@ -1254,6 +1354,7 @@ export default function App() {
       setAuthUserId("");
       setAuthPassword("");
       setAuthCaptcha("");
+      setCaptchaRequired(false);
       setBookmarks([]);
       setMemos([]);
       setAuthNotice(t("Logged out.", "로그아웃 완료"));
@@ -1381,13 +1482,13 @@ export default function App() {
       </header>
 
       <section className="tabs">
-        {TABS.map((tab) => (
+        {tabOptions.map((tab) => (
           <button
-            key={tab}
-            className={`tab ${activeTab === tab ? "active" : ""}`}
-            onClick={() => setActiveTab(tab)}
+            key={tab.key}
+            className={`tab ${activeTab === tab.key ? "active" : ""}`}
+            onClick={() => setActiveTab(tab.key)}
           >
-            {tab}
+            {tab.label}
           </button>
         ))}
       </section>
@@ -1519,21 +1620,13 @@ export default function App() {
                 {chapterData?.verses?.map((verse) => {
                   const verseKey = makeVerseKey(selectedBookId, chapter, verse.verse);
                   const isActive = activeVerseKey === verseKey;
-                  const bookmarkLabel = isEnglishVersion
-                    ? bookmarksByKey.has(verseKey)
-                      ? "Bookmarked"
-                      : "Bookmark"
-                    : bookmarksByKey.has(verseKey)
-                      ? "북마크됨"
-                      : "북마크";
-                  const memoLabel = isEnglishVersion
-                    ? memosByKey.has(verseKey)
-                      ? "Edit memo"
-                      : "Memo"
-                    : memosByKey.has(verseKey)
-                      ? "메모 수정"
-                      : "메모";
-                  const closeLabel = isEnglishVersion ? "Close" : "닫기";
+                  const bookmarkLabel = bookmarksByKey.has(verseKey)
+                    ? t("Bookmarked", "북마크됨")
+                    : t("Bookmark", "북마크");
+                  const memoLabel = memosByKey.has(verseKey)
+                    ? t("Edit memo", "메모 수정")
+                    : t("Memo", "메모");
+                  const closeLabel = t("Close", "닫기");
                   return (
                   <div
                     key={verse.verse}
@@ -1812,6 +1905,28 @@ export default function App() {
           <div className="grid">
             <div className="controls">
               <h2>{t("Account", "계정")}</h2>
+              <div className="settings-card">
+                <div className="settings-title">{t("Language", "언어")}</div>
+                <label>
+                  {t("UI language", "UI 언어")}
+                  <select
+                    value={uiLang}
+                    onChange={(e) => setUiLang(normalizeUiLang(e.target.value))}
+                  >
+                    {UI_LANGUAGE_OPTIONS.map((option) => (
+                      <option key={option.id} value={option.id}>
+                        {isEnglishUI ? option.labelEn : option.labelKo}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="meta">
+                  {t(
+                    "Applies to menus and notices.",
+                    "메뉴와 안내 문구에 적용됩니다."
+                  )}
+                </div>
+              </div>
               {!authToken && GOOGLE_OAUTH_ENABLED && (
                 <>
                   <button
@@ -1847,19 +1962,29 @@ export default function App() {
                   onChange={(e) => setAuthPassword(e.target.value)}
                 />
               </label>
-              <label>
-                {t("Captcha token (if required)", "추가 인증 토큰 (필요 시)")}
-                <input
-                  type="text"
-                  value={authCaptcha}
-                  placeholder="captcha_token"
-                  onChange={(e) => setAuthCaptcha(e.target.value)}
-                />
-              </label>
+              {(captchaRequired || authCaptcha) && (
+                <label>
+                  {t("Captcha token (if required)", "추가 인증 토큰 (필요 시)")}
+                  {captchaRequired &&
+                  CAPTCHA_PROVIDER === "turnstile" &&
+                  TURNSTILE_SITE_KEY ? (
+                    <div className="captcha-turnstile" ref={captchaContainerRef} />
+                  ) : (
+                    <input
+                      type="text"
+                      value={authCaptcha}
+                      placeholder="captcha_token"
+                      onChange={(e) => setAuthCaptcha(e.target.value)}
+                    />
+                  )}
+                </label>
+              )}
               <button
                 className="primary"
                 onClick={handleLogin}
-                disabled={authLoading || !authEmail || !authPassword}
+                disabled={
+                  authLoading || !authEmail || !authPassword || (captchaRequired && !authCaptcha)
+                }
               >
                 {authLoading ? t("Working", "처리 중") : t("Sign in", "로그인")}
               </button>

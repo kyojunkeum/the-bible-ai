@@ -18,3 +18,6 @@ data/raw_html/
 .DS_Store
 .vscode/
 .env
+web/.env
+web/.env.local
+web/.env.*.local

@@ -251,6 +251,7 @@ export default function App() {
   const [authError, setAuthError] = useState("");
   const [authNotice, setAuthNotice] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
+  const [captchaRequired, setCaptchaRequired] = useState(false);
   const [oauthError, setOauthError] = useState("");
   const [oauthLoading, setOauthLoading] = useState(false);
   const [chatStorageConsent, setChatStorageConsent] = useState(false);
@@ -537,6 +538,8 @@ export default function App() {
       setOpenaiSettingsError("");
       setOpenaiSettingsNotice("");
       setOpenaiSettingsLoading(false);
+      setCaptchaRequired(false);
+      setAuthCaptcha("");
       setChatMeta(null);
       setConversationId("");
       setChatMessages([]);
@@ -1017,6 +1020,7 @@ export default function App() {
       if (data.email) setAuthEmail(data.email);
       setAuthPassword("");
       setAuthCaptcha("");
+      setCaptchaRequired(false);
       setAuthNotice(t("Signed up and logged in.", "회원가입 및 로그인 완료"));
     } catch (err) {
       setAuthError(String(err.message || err));
@@ -1043,6 +1047,11 @@ export default function App() {
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         const message = data?.error?.message || t("Login failed.", "로그인에 실패했습니다.");
+        if (res.status === 403 && message === "captcha required") {
+          setCaptchaRequired(true);
+          setAuthCaptcha("");
+          throw new Error(t("Captcha required.", "추가 인증이 필요합니다."));
+        }
         throw new Error(message);
       }
       const data = await res.json();
@@ -1052,6 +1061,7 @@ export default function App() {
       if (data.email) setAuthEmail(data.email);
       setAuthPassword("");
       setAuthCaptcha("");
+      setCaptchaRequired(false);
       setAuthNotice(t("Logged in.", "로그인 완료"));
     } catch (err) {
       setAuthError(String(err.message || err));
@@ -1078,6 +1088,7 @@ export default function App() {
       setAuthEmail("");
       setAuthPassword("");
       setAuthCaptcha("");
+      setCaptchaRequired(false);
       setBookmarks([]);
       setMemos([]);
       setAuthNotice(t("Logged out.", "로그아웃 완료"));
@@ -2088,20 +2099,24 @@ export default function App() {
                         onChangeText={setAuthPassword}
                         secureTextEntry
                       />
-                      <TextInput
-                        style={styles.input}
-                        placeholder={t(
-                          "Captcha token (if required)",
-                          "추가 인증 토큰 (필요 시)"
-                        )}
-                        value={authCaptcha}
-                        onChangeText={setAuthCaptcha}
-                        autoCapitalize="none"
-                      />
+                      {(captchaRequired || authCaptcha) && (
+                        <TextInput
+                          style={styles.input}
+                          placeholder={t(
+                            "Captcha token (if required)",
+                            "추가 인증 토큰 (필요 시)"
+                          )}
+                          value={authCaptcha}
+                          onChangeText={setAuthCaptcha}
+                          autoCapitalize="none"
+                        />
+                      )}
                       <TouchableOpacity
                         style={[styles.primary, authLoading && styles.primaryDisabled]}
                         onPress={handleLogin}
-                        disabled={authLoading || !authEmail || !authPassword}
+                        disabled={
+                          authLoading || !authEmail || !authPassword || (captchaRequired && !authCaptcha)
+                        }
                       >
                         <Text style={styles.primaryText}>
                           {authLoading ? t("Working", "처리 중") : t("Sign in", "로그인")}

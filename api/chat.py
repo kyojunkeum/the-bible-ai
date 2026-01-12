@@ -1083,16 +1083,38 @@ def summarize_messages(
     return " / ".join(user_lines[-3:])[:SUMMARY_MAX_CHARS]
 
 
+def _citation_prompt_block(citations: Optional[List[dict]]) -> str:
+    if not citations:
+        return ""
+    lines = []
+    for citation in citations:
+        verse_label = (
+            f"{citation['chapter']}:{citation['verse_start']}-{citation['verse_end']}"
+            if citation.get("verse_end", citation["verse_start"]) > citation["verse_start"]
+            else f"{citation['chapter']}:{citation['verse_start']}"
+        )
+        lines.append(f"({citation['book_name']} {verse_label}) {citation['text']}")
+    return "\n".join(lines)
+
+
 def build_assistant_message(
     user_message: str,
     gating: dict,
     summary: str,
     recent_messages: List[dict],
+    citations: Optional[List[dict]] = None,
     use_openai: bool = False,
     openai_api_key: str | None = None,
     model_info: Optional[dict] = None,
 ) -> tuple[str, bool]:
     recent_text = "\n".join(f"{m['role']}: {m['content']}" for m in recent_messages)
+    citation_block = _citation_prompt_block(citations)
+    citation_rule = ""
+    if citation_block:
+        citation_rule = (
+            "Use ONLY the provided Bible verses. Quote them verbatim with the "
+            "(Book Chapter:Verse) format. Connect them to gentle counseling.\n"
+        )
     prompt = (
         "You are a gentle Korean counselor. Avoid preaching. Ask 1-2 questions. "
         "Keep it concise. Respond ONLY in Korean and do not use English.\n"
@@ -1100,6 +1122,8 @@ def build_assistant_message(
         f"Recent:\n{recent_text}\n"
         f"Gating: {gating}\n"
         f"User: {user_message}\n"
+        f"{citation_rule}"
+        f"{'Bible verses:\\n' + citation_block + '\\n' if citation_block else ''}"
     )
     response = generate_with_llm(
         prompt,

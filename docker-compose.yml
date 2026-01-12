@@ -5,19 +5,22 @@ services:
     environment:
       BIBLE_DB_HOST: postgres
       BIBLE_DB_PORT: "5432"
-      BIBLE_DB_NAME: bible_app
-      BIBLE_DB_USER: bible
-      BIBLE_DB_PASSWORD: biblepassword
+      BIBLE_DB_NAME: ${POSTGRES_DB}
+      BIBLE_DB_USER: ${POSTGRES_USER}
+      BIBLE_DB_PASSWORD: ${POSTGRES_PASSWORD}
       OLLAMA_URL: http://ollama:11434
       OLLAMA_MODEL: qwen2:7b
-      AUTH_PEPPER: c1CMQ0_gBnD6pBIIurIkKE5dTxVuS0YNIAY06DTb18o
-      AUTH_CAPTCHA_BYPASS: 8kzG3908GpxBUf-fMBhyQzNJ5OjSJBLi
+      AUTH_PEPPER: ${AUTH_PEPPER}
+      AUTH_CAPTCHA_BYPASS: ${AUTH_CAPTCHA_BYPASS}
+      JWT_SECRET: ${JWT_SECRET}
+      CAPTCHA_PROVIDER: turnstile
+      TURNSTILE_SECRET_KEY: ${TURNSTILE_SECRET_KEY}
       REDIS_URL: redis://redis:6379/0
       OPENAI_CITATION_ENABLED: "1"
       OPENAI_BASE_URL: http://litellm:4000
       OPENAI_MODEL: gpt-4o-mini
       OPENAI_API_KEY: ${OPENAI_API_KEY}
-      OPENAI_KEY_ENCRYPTION_SECRET: change-me
+      OPENAI_KEY_ENCRYPTION_SECRET: ${OPENAI_KEY_ENCRYPTION_SECRET}
     ports:
       - "9000:9000"
     volumes:
@@ -42,9 +45,9 @@ services:
     image: pgvector/pgvector:pg15
     container_name: bible-postgres
     environment:
-      POSTGRES_USER: bible
-      POSTGRES_PASSWORD: biblepassword
-      POSTGRES_DB: bible_app
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     ports:
       - "5432:5432"
     volumes:

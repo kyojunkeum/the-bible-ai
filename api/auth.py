@@ -7,6 +7,7 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import requests
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from psycopg2.extras import RealDictCursor
@@ -17,6 +18,12 @@ PBKDF2_ITERATIONS = 120_000
 SESSION_DAYS = 30
 AUTH_PEPPER = os.getenv("AUTH_PEPPER", "")
 AUTH_CAPTCHA_BYPASS = os.getenv("AUTH_CAPTCHA_BYPASS", "")
+CAPTCHA_PROVIDER = os.getenv("CAPTCHA_PROVIDER", "").lower()
+TURNSTILE_SECRET_KEY = os.getenv("TURNSTILE_SECRET_KEY", "")
+RECAPTCHA_SECRET_KEY = os.getenv("RECAPTCHA_SECRET_KEY", "")
+RECAPTCHA_MIN_SCORE = float(os.getenv("RECAPTCHA_MIN_SCORE", "0.5"))
+TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+RECAPTCHA_VERIFY_URL = "https://www.google.com/recaptcha/api/siteverify"
 ARGON2_TIME_COST = int(os.getenv("ARGON2_TIME_COST", "2"))
 ARGON2_MEMORY_COST = int(os.getenv("ARGON2_MEMORY_COST", "102400"))
 ARGON2_PARALLELISM = int(os.getenv("ARGON2_PARALLELISM", "8"))
@@ -103,11 +110,53 @@ def update_password_hash(conn, user_id: str, new_hash: str) -> None:
         )
 
 
-def verify_captcha_token(token: str | None) -> bool:
+def _verify_turnstile(token: str, ip_address: str | None) -> bool:
+    if not TURNSTILE_SECRET_KEY:
+        return False
+    payload = {"secret": TURNSTILE_SECRET_KEY, "response": token}
+    if ip_address:
+        payload["remoteip"] = ip_address
+    try:
+        res = requests.post(TURNSTILE_VERIFY_URL, data=payload, timeout=5)
+        res.raise_for_status()
+        data = res.json()
+    except requests.RequestException:
+        return False
+    return bool(data.get("success"))
+
+
+def _verify_recaptcha(token: str, ip_address: str | None) -> bool:
+    if not RECAPTCHA_SECRET_KEY:
+        return False
+    payload = {"secret": RECAPTCHA_SECRET_KEY, "response": token}
+    if ip_address:
+        payload["remoteip"] = ip_address
+    try:
+        res = requests.post(RECAPTCHA_VERIFY_URL, data=payload, timeout=5)
+        res.raise_for_status()
+        data = res.json()
+    except requests.RequestException:
+        return False
+    if not data.get("success"):
+        return False
+    score = data.get("score")
+    if score is None:
+        return True
+    try:
+        return float(score) >= RECAPTCHA_MIN_SCORE
+    except (TypeError, ValueError):
+        return False
+
+
+def verify_captcha_token(token: str | None, ip_address: str | None = None) -> bool:
     if not token:
         return False
     if AUTH_CAPTCHA_BYPASS:
         return hmac.compare_digest(token, AUTH_CAPTCHA_BYPASS)
+    if CAPTCHA_PROVIDER == "turnstile":
+        return _verify_turnstile(token, ip_address)
+    if CAPTCHA_PROVIDER.startswith("recaptcha"):
+        return _verify_recaptcha(token, ip_address)
     return False
 
 

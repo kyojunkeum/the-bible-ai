@@ -562,7 +562,7 @@ def login(payload: AuthLoginRequest, request: Request, conn=Depends(get_conn)):
         )
 
     if requires_captcha(account_attempt) or requires_captcha(ip_attempt):
-        if not verify_captcha_token(payload.captcha_token):
+        if not verify_captcha_token(payload.captcha_token, ip_address):
             raise HTTPException(status_code=403, detail="captcha required")
 
     user = get_user_by_email(conn, email)
@@ -1392,21 +1392,8 @@ def post_message(
         use_openai=use_openai_llm,
         openai_api_key=openai_api_key,
     )
-    llm_meta: dict = {}
-    assistant_message, llm_ok = build_assistant_message(
-        sanitized_message,
-        gating,
-        summary,
-        recent_messages,
-        use_openai=use_openai_llm,
-        openai_api_key=openai_api_key,
-        model_info=llm_meta,
-    )
-    gating["llm_ok"] = llm_ok
-    if not llm_ok:
-        gating["need_verse"] = False
-        gating["source"] = "degraded"
     citations = []
+    retrieval_meta: dict = {}
     if gating.get("need_verse"):
         turn_index = len(record["messages"])
         log_chat_event(
@@ -1431,6 +1418,7 @@ def post_message(
             use_openai=use_openai_llm,
             openai_api_key=openai_api_key,
         )
+        citations = _verify_citations(conn, citations)
         log_chat_event(
             "retrieval_candidates",
             {
@@ -1439,8 +1427,24 @@ def post_message(
                 **retrieval_meta,
             },
         )
+
+    llm_meta: dict = {}
+    assistant_message, llm_ok = build_assistant_message(
+        sanitized_message,
+        gating,
+        summary,
+        recent_messages,
+        citations=citations if gating.get("need_verse") else None,
+        use_openai=use_openai_llm,
+        openai_api_key=openai_api_key,
+        model_info=llm_meta,
+    )
+    gating["llm_ok"] = llm_ok
+    if not llm_ok:
+        gating["need_verse"] = False
+        gating["source"] = "degraded"
+    if gating.get("need_verse"):
         assistant_message = append_citations_to_response(assistant_message, citations)
-    citations = _verify_citations(conn, citations)
     if gating.get("need_verse"):
         if citations:
             log_chat_event(
