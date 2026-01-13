@@ -312,9 +312,11 @@ export default function App() {
   const [authError, setAuthError] = useState("");
   const [authNotice, setAuthNotice] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
+  const [authCooldownRemaining, setAuthCooldownRemaining] = useState(0);
   const [captchaRequired, setCaptchaRequired] = useState(false);
   const captchaContainerRef = useRef(null);
   const captchaWidgetRef = useRef(null);
+  const authCooldownTimerRef = useRef(null);
   const [oauthError, setOauthError] = useState("");
   const [oauthLoading, setOauthLoading] = useState(false);
   const [chatStorageConsent, setChatStorageConsent] = useState(
@@ -462,6 +464,40 @@ export default function App() {
       localStorage.removeItem(AUTH_EMAIL_KEY);
     }
   }, [authToken, authRefreshToken, authUserId, authEmail]);
+
+  useEffect(() => {
+    return () => {
+      if (authCooldownTimerRef.current) {
+        clearInterval(authCooldownTimerRef.current);
+        authCooldownTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  const startAuthCooldown = (seconds) => {
+    const total = Math.max(1, Math.ceil(Number(seconds) || 30));
+    const endAt = Date.now() + total * 1000;
+    if (authCooldownTimerRef.current) {
+      clearInterval(authCooldownTimerRef.current);
+    }
+    setAuthCooldownRemaining(total);
+    authCooldownTimerRef.current = setInterval(() => {
+      const remaining = Math.max(0, Math.ceil((endAt - Date.now()) / 1000));
+      setAuthCooldownRemaining(remaining);
+      if (remaining <= 0 && authCooldownTimerRef.current) {
+        clearInterval(authCooldownTimerRef.current);
+        authCooldownTimerRef.current = null;
+      }
+    }, 1000);
+  };
+
+  const clearAuthCooldown = () => {
+    if (authCooldownTimerRef.current) {
+      clearInterval(authCooldownTimerRef.current);
+      authCooldownTimerRef.current = null;
+    }
+    setAuthCooldownRemaining(0);
+  };
 
   useEffect(() => {
     if (!authToken) {
@@ -1198,6 +1234,7 @@ export default function App() {
   };
 
   const handleLogin = async () => {
+    if (authCooldownRemaining > 0) return;
     setAuthError("");
     setAuthNotice("");
     setAuthLoading(true);
@@ -1220,6 +1257,13 @@ export default function App() {
           setAuthCaptcha("");
           throw new Error(t("Captcha required.", "추가 인증이 필요합니다."));
         }
+        if (res.status === 429) {
+          const retryAfterRaw = res.headers.get("retry-after");
+          const retryAfter = retryAfterRaw ? Number(retryAfterRaw) : NaN;
+          startAuthCooldown(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 30);
+          setAuthError("");
+          return;
+        }
         throw new Error(message);
       }
       const data = await res.json();
@@ -1230,6 +1274,7 @@ export default function App() {
       setAuthPassword("");
       setAuthCaptcha("");
       setCaptchaRequired(false);
+      clearAuthCooldown();
       setAuthNotice(t("Logged in.", "로그인 완료"));
     } catch (err) {
       setAuthError(String(err.message || err));
@@ -1888,7 +1933,8 @@ export default function App() {
                       authLoading ||
                       !authEmail ||
                       !authPassword ||
-                      (captchaRequired && !authCaptcha)
+                      (captchaRequired && !authCaptcha) ||
+                      authCooldownRemaining > 0
                     }
                   >
                     {authLoading ? t("Working", "처리 중") : t("Sign in", "로그인")}
@@ -1900,6 +1946,14 @@ export default function App() {
                   >
                     {t("Create account", "회원가입")}
                   </button>
+                  {authCooldownRemaining > 0 && (
+                    <div className="error">
+                      {t(
+                        `Please try again in ${authCooldownRemaining} seconds.`,
+                        `${authCooldownRemaining}초 후 다시 시도해 주세요.`
+                      )}
+                    </div>
+                  )}
                   {authError && <div className="error">{authError}</div>}
                   {authNotice && <div className="meta">{authNotice}</div>}
                 </>

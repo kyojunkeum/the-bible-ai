@@ -145,6 +145,7 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Retry-After"],
 )
 
 EVENT_LOG_RESET_ON_STARTUP = os.getenv("EVENT_LOG_RESET_ON_STARTUP", "1") == "1"
@@ -162,6 +163,7 @@ def handle_http_exception(_request: Request, exc: HTTPException):
     return JSONResponse(
         status_code=exc.status_code,
         content={"error": {"code": "http_error", "message": str(exc.detail)}},
+        headers=exc.headers,
     )
 
 
@@ -627,7 +629,8 @@ def login(payload: AuthLoginRequest, request: Request, conn=Depends(get_conn)):
         log_api_event("auth_login_blocked", {"retry_after": retry_after})
         raise HTTPException(
             status_code=429,
-            detail=f"login temporarily blocked, retry after {retry_after}s",
+            detail="login temporarily blocked for 30 seconds",
+            headers={"Retry-After": str(retry_after)},
         )
 
     if requires_captcha(account_attempt) or requires_captcha(ip_attempt):

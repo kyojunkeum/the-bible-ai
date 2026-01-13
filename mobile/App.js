@@ -260,6 +260,7 @@ export default function App() {
   const [authError, setAuthError] = useState("");
   const [authNotice, setAuthNotice] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
+  const [authCooldownRemaining, setAuthCooldownRemaining] = useState(0);
   const [captchaRequired, setCaptchaRequired] = useState(false);
   const [oauthError, setOauthError] = useState("");
   const [oauthLoading, setOauthLoading] = useState(false);
@@ -293,6 +294,7 @@ export default function App() {
   const chapterCache = useRef(new Map());
   const cacheOrder = useRef([]);
   const lastOauthUrlRef = useRef("");
+  const authCooldownTimerRef = useRef(null);
 
   const isEnglishUI = uiLang === "en";
   const t = (en, ko) => (isEnglishUI ? en : ko);
@@ -412,6 +414,40 @@ export default function App() {
     if (!newToken) return res;
     const retryHeaders = { ...(options.headers || {}), Authorization: `Bearer ${newToken}` };
     return fetch(url, { ...options, headers: retryHeaders });
+  };
+
+  useEffect(() => {
+    return () => {
+      if (authCooldownTimerRef.current) {
+        clearInterval(authCooldownTimerRef.current);
+        authCooldownTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  const startAuthCooldown = (seconds) => {
+    const total = Math.max(1, Math.ceil(Number(seconds) || 30));
+    const endAt = Date.now() + total * 1000;
+    if (authCooldownTimerRef.current) {
+      clearInterval(authCooldownTimerRef.current);
+    }
+    setAuthCooldownRemaining(total);
+    authCooldownTimerRef.current = setInterval(() => {
+      const remaining = Math.max(0, Math.ceil((endAt - Date.now()) / 1000));
+      setAuthCooldownRemaining(remaining);
+      if (remaining <= 0 && authCooldownTimerRef.current) {
+        clearInterval(authCooldownTimerRef.current);
+        authCooldownTimerRef.current = null;
+      }
+    }, 1000);
+  };
+
+  const clearAuthCooldown = () => {
+    if (authCooldownTimerRef.current) {
+      clearInterval(authCooldownTimerRef.current);
+      authCooldownTimerRef.current = null;
+    }
+    setAuthCooldownRemaining(0);
   };
 
   useEffect(() => {
@@ -1044,6 +1080,7 @@ export default function App() {
   };
 
   const handleLogin = async () => {
+    if (authCooldownRemaining > 0) return;
     setAuthError("");
     setAuthNotice("");
     setAuthLoading(true);
@@ -1066,6 +1103,13 @@ export default function App() {
           setAuthCaptcha("");
           throw new Error(t("Captcha required.", "추가 인증이 필요합니다."));
         }
+        if (res.status === 429) {
+          const retryAfterRaw = res.headers.get("retry-after");
+          const retryAfter = retryAfterRaw ? Number(retryAfterRaw) : NaN;
+          startAuthCooldown(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 30);
+          setAuthError("");
+          return;
+        }
         throw new Error(message);
       }
       const data = await res.json();
@@ -1076,6 +1120,7 @@ export default function App() {
       setAuthPassword("");
       setAuthCaptcha("");
       setCaptchaRequired(false);
+      clearAuthCooldown();
       setAuthNotice(t("Logged in.", "로그인 완료"));
     } catch (err) {
       setAuthError(String(err.message || err));
@@ -1973,10 +2018,17 @@ export default function App() {
                         />
                       )}
                       <TouchableOpacity
-                        style={[styles.primary, authLoading && styles.primaryDisabled]}
+                        style={[
+                          styles.primary,
+                          (authLoading || authCooldownRemaining > 0) && styles.primaryDisabled
+                        ]}
                         onPress={handleLogin}
                         disabled={
-                          authLoading || !authEmail || !authPassword || (captchaRequired && !authCaptcha)
+                          authLoading ||
+                          !authEmail ||
+                          !authPassword ||
+                          (captchaRequired && !authCaptcha) ||
+                          authCooldownRemaining > 0
                         }
                       >
                         <Text style={styles.primaryText}>
@@ -1994,6 +2046,14 @@ export default function App() {
                       </TouchableOpacity>
                     </View>
                   )}
+                  {authCooldownRemaining > 0 ? (
+                    <Text style={styles.error}>
+                      {t(
+                        `Please try again in ${authCooldownRemaining} seconds.`,
+                        `${authCooldownRemaining}초 후 다시 시도해 주세요.`
+                      )}
+                    </Text>
+                  ) : null}
                   {authError ? <Text style={styles.error}>{authError}</Text> : null}
                   {authNotice ? <Text style={styles.meta}>{authNotice}</Text> : null}
                 </View>
